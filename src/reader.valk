@@ -1,0 +1,475 @@
+use valk.io
+use valk.fs
+
+/// Reads CSV one row at a time, from text in memory, a file or any `io.Reader`.
+///
+/// Only one chunk of the input and the row being read are held in memory, so a file of any size
+/// can be read. A quoted field may run over chunk boundaries and over as many lines as it likes.
+///
+/// ```valk
+/// let reader = csv.Reader.open("users.csv", csv.Options { header: true }) ! panic("%{E.message}")
+/// while true {
+///     let row = reader.next_map() ! panic("%{E.message} at line %{E.line}")
+///     if !isset(row) : break
+///     println(row.get("email") !? "")
+/// }
+/// ```
++ class Reader {
+    source: ?io.Reader
+    file: ?fs.FileStream
+    // Where bytes from the source are read into
+    chunk: mut &[u8]
+    // The bytes being parsed: the text, or the chunk
+    data: &[u8]
+    at: uint (0)
+    end: uint (0)
+    exhausted: bool (false)
+    options: Options
+    // Whether the first row is the header; `parse`, `parse_maps` and `decode_to` set it
+    use_header: bool
+    started: bool (false)
+    field: ByteBuffer (.new(64))
+    // The place of the next byte
+    pos_line: uint (1)
+    pos_column: uint (1)
+    after_cr: bool (false)
+    // Rows read so far, the header included, and how many fields the first one had
+    rows_read: uint (0)
+    width: uint (0)
+    // Where each field of the last row starts
+    field_lines: Array[uint] (.{})
+    field_columns: Array[uint] (.{})
+    header_row: Array[String] (.{})
+    header_line: uint (0)
+    // The index of each header name; the first column wins when a name is used twice
+    columns: Map[uint] (.{})
+    /// The line the last row that was read starts on, counting from one.
+    ~ line: uint (0)
+
+    /// Creates a reader over any `io.Reader`, such as a `fs.FileStream` or a socket.
+    ///
+    /// The source is read `chunk_size` bytes at a time, at least 4.
+    + static fn new(source: io.Reader, options: ?Options (null), chunk_size: uint (65536)) Reader {
+        let opts = options ?? Options {}
+        check_options(opts)
+        let chunk = [u8]{ 0 x chunk_size < 4 ? 4 : chunk_size }
+        return Reader {
+            source: source
+            file: null
+            chunk: chunk
+            data: chunk
+            options: opts
+            use_header: opts.header
+        }
+    }
+
+    /// Creates a reader over text that is already in memory. The text is not copied.
+    + static fn from_string(text: String, options: ?Options (null)) Reader {
+        let opts = options ?? Options {}
+        check_options(opts)
+        return Reader {
+            source: null
+            file: null
+            chunk: [u8]{ 0 x 4 }
+            data: text
+            end: text.length
+            options: opts
+            use_header: opts.header
+        }
+    }
+
+    /// Opens a file and reads it `chunk_size` bytes at a time.
+    ///
+    /// The file closes when it has been read to the end; `close` closes it sooner.
+    + static fn open(path: String, options: ?Options (null), chunk_size: uint (65536)) Reader !Error {
+        let stream = fs.stream(path) ! throw .io { message: "Cannot open '" + path + "'" }
+        let reader = Reader.new(stream, options, chunk_size)
+        reader.file = stream
+        return reader
+    }
+
+    /// Returns the next row, or `null` after the last one.
+    ///
+    /// Empty lines are skipped unless `skip_empty_lines` is off, and so are comment lines when a
+    /// `comment` byte is set. With the `header` option on, the first row is the header, which
+    /// `header` returns, and never comes out of here.
+    + fn next() ?Array[String] !Error {
+        if !this.started : this.start() !>
+        let row = this.read_row() !>
+        if !isset(row) : return null
+        this.check_width(row) !>
+        return row
+    }
+
+    /// Returns the next row as a map from column name to field, or `null` after the last one.
+    ///
+    /// Needs the `header` option. A row that is shorter than the header leaves its missing
+    /// columns out of the map, and fields past the end of the header are dropped; strict mode
+    /// turns both into an error.
+    + fn next_map() ?Map[String] !Error {
+        this.need_header() !>
+        let row = this.next() !>
+        if !isset(row) : return null
+        let map = Map[String]{}
+        each this.header_row as name, index {
+            if index >= row.length : break
+            if !map.has(name) : map.set(name, row.get(index) !? "")
+        }
+        return map
+    }
+
+    /// Returns the next row as an object of your own class or struct, or `null` after the last
+    /// one.
+    ///
+    /// Needs the `header` option: every field of `T` is read from the column with its name, the
+    /// way `decode_to` does it.
+    ///
+    /// ```valk
+    /// while true {
+    ///     let user = reader.next_to[User]() ! panic("%{E.message} at line %{E.line}")
+    ///     if !isset(user) : break
+    /// }
+    /// ```
+    + fn next_to[T]() ?T !Error {
+        this.need_header() !>
+        let row = this.next() !>
+        if !isset(row) : return null
+        return decode_row[T](this, row) !>
+    }
+
+    /// Returns the header row: empty without the `header` option, or when the input is empty.
+    + fn header() Array[String] !Error {
+        if !this.started : this.start() !>
+        return this.header_row
+    }
+
+    /// Returns the index of the column with this name in the header, for `row[index]`.
+    ///
+    /// Throws `header` when there is no such column, or no header.
+    + fn column(name: String) uint !Error {
+        this.need_header() !>
+        return this.columns.get(name) ! throw .header {
+            message: "The header has no column '" + name + "'"
+            line: this.header_line
+            column: 1
+        }
+    }
+
+    /// Closes the file that `open` opened. Rows that were not read yet are not returned.
+    ///
+    /// A reader over another source leaves closing it to its owner.
+    + fn close() {
+        let file = this.file
+        if isset(file) : file.close() _
+        this.exhausted = true
+        this.at = this.end
+    }
+
+    //
+    // Rows and fields
+    //
+
+    // The byte order mark, and the header when there is one
+    fn start() !Error {
+        this.started = true
+        this.skip_bom() !>
+        if !this.use_header : return
+        let row = this.read_row() !>
+        if !isset(row) : return
+        this.check_width(row) !>
+        this.header_row = row
+        this.header_line = this.line
+        each row as name, index {
+            if !this.columns.has(name) : this.columns.set(name, index)
+        }
+    }
+
+    fn need_header() !Error {
+        if !this.started : this.start() !>
+        if !this.use_header : throw .header { message: "Reading rows by column name needs a header: set `header: true` in the options" }
+    }
+
+    // Strict mode: every row has as many fields as the first
+    fn check_width(row: Array[String]) !Error {
+        if !this.options.strict : return
+        if this.rows_read == 1 {
+            this.width = row.length
+            return
+        }
+        if row.length == this.width : return
+        // Too many fields: point at the first one too many
+        let line = this.line
+        let column: uint = 1
+        if row.length > this.width {
+            line = this.field_lines.get(this.width) !? line
+            column = this.field_columns.get(this.width) !? 1
+        }
+        throw .fields {
+            message: "This row has " + row.length + " fields, where the first row has " + this.width
+            line: line
+            column: column
+        }
+    }
+
+    // The next row, or null at the end of the input
+    fn read_row() ?Array[String] !Error {
+        let options = this.options
+        while true {
+            let more = this.fill() !>
+            if !more : return null
+            let ch = this.data[this.at]
+            if ch == '\n' || ch == '\r' {
+                if !options.skip_empty_lines : break
+                this.take_line_end() !>
+                continue
+            }
+            if options.comment != 0 && ch == options.comment {
+                this.skip_line() !>
+                continue
+            }
+            break
+        }
+        this.line = this.pos_line
+        this.field_lines.clear()
+        this.field_columns.clear()
+        let row = Array[String]{}
+        while true {
+            let another = this.read_field(row) !>
+            if !another : break
+        }
+        this.rows_read++
+        return row
+    }
+
+    // Reads one field into `row`, and the delimiter or line end after it. Returns whether
+    // another field follows on the same row.
+    fn read_field(row: Array[String]) bool !Error {
+        let options = this.options
+        let field = this.field
+        field.clear()
+        if options.trim : this.skip_blanks() !>
+        this.field_lines.append(this.pos_line)
+        this.field_columns.append(this.pos_column)
+
+        let more = this.fill() !>
+        if more && this.data[this.at] == options.quote {
+            this.read_quoted(field) !>
+            this.after_quote(field) !>
+        } else {
+            this.read_unquoted(field) !>
+            if options.trim : trim_end(field, 0, options.delimiter)
+        }
+        row.append(field.to_string())
+
+        more = this.fill() !>
+        if !more : return false
+        if this.data[this.at] == options.delimiter {
+            this.take()
+            return true
+        }
+        this.take_line_end() !>
+        return false
+    }
+
+    // Text up to the delimiter, the end of the line or the end of the input
+    fn read_unquoted(field: ByteBuffer) !Error {
+        let delimiter = this.options.delimiter
+        let quote = this.options.quote
+        let strict = this.options.strict
+        while true {
+            let more = this.fill() !>
+            if !more : return
+            let data = this.data
+            let start = this.at
+            let end = this.end
+            let i = start
+            while i < end {
+                let ch = data[i]
+                if ch == delimiter || ch == '\n' || ch == '\r' : break
+                if ch == quote && strict {
+                    throw .syntax {
+                        message: "A quote inside an unquoted field: quote the whole field, and write the quote twice"
+                        line: this.pos_line
+                        column: this.pos_column
+                    }
+                }
+                // A UTF-8 continuation byte belongs to the character before it
+                if (ch & 0xc0) != 0x80 : this.pos_column++
+                i++
+            }
+            if i > start {
+                field.write(data.view(start, i - start))
+                this.after_cr = false
+            }
+            this.at = i
+            if i < end : return
+        }
+    }
+
+    // A quoted field: everything up to the closing quote, where two quotes stand for one
+    fn read_quoted(field: ByteBuffer) !Error {
+        let quote = this.options.quote
+        let line = this.pos_line
+        let column = this.pos_column
+        this.take()
+        while true {
+            let more = this.fill() !>
+            if !more : throw .syntax { message: "A quoted field is not closed", line: line, column: column }
+            let data = this.data
+            let start = this.at
+            let end = this.end
+            let i = start
+            while i < end {
+                let ch = data[i]
+                if ch == quote : break
+                this.step(ch)
+                i++
+            }
+            if i > start : field.write(data.view(start, i - start))
+            this.at = i
+            if i == end : continue
+            // The closing quote, or the first of two
+            this.take()
+            more = this.fill() !>
+            if more && this.data[this.at] == quote {
+                this.take()
+                field.write_byte(quote)
+                continue
+            }
+            return
+        }
+    }
+
+    // After a closing quote comes the delimiter or the end of the line. Strict mode allows
+    // nothing else; otherwise the text is added to the field, as most readers do.
+    fn after_quote(field: ByteBuffer) !Error {
+        let options = this.options
+        if options.strict {
+            if options.trim : this.skip_blanks() !>
+            let more = this.fill() !>
+            if !more : return
+            let ch = this.data[this.at]
+            if ch == options.delimiter || ch == '\n' || ch == '\r' : return
+            throw .syntax {
+                message: "Expected the delimiter or the end of the line after the closing quote"
+                line: this.pos_line
+                column: this.pos_column
+            }
+        }
+        let quoted = field.length
+        this.read_unquoted(field) !>
+        if options.trim : trim_end(field, quoted, options.delimiter)
+    }
+
+    fn skip_blanks() !Error {
+        let delimiter = this.options.delimiter
+        while true {
+            let more = this.fill() !>
+            if !more : return
+            if !is_blank(this.data[this.at], delimiter) : return
+            this.take()
+        }
+    }
+
+    // A comment line, with its line end
+    fn skip_line() !Error {
+        while true {
+            let more = this.fill() !>
+            if !more : return
+            let ch = this.data[this.at]
+            if ch == '\n' || ch == '\r' {
+                this.take_line_end() !>
+                return
+            }
+            this.take()
+        }
+    }
+
+    // `\n`, `\r\n` or a lone `\r`
+    fn take_line_end() !Error {
+        let ch = this.take()
+        if ch != '\r' : return
+        let more = this.fill() !>
+        if more && this.data[this.at] == '\n' : this.take()
+    }
+
+    //
+    // Bytes
+    //
+
+    // Makes sure the byte at `at` is there; false at the end of the input
+    fn fill() bool !Error {
+        if this.at < this.end : return true
+        this.at = 0
+        this.end = 0
+        let count = this.read_more() !>
+        return count > 0
+    }
+
+    // Reads from the source into the chunk after `end`; returns the bytes that came in, 0 at the
+    // end of the input
+    fn read_more() uint !Error {
+        let source = this.source
+        if this.exhausted || !isset(source) : return 0
+        let room = this.chunk.view(this.end, this.chunk.length - this.end)
+        let count = source.read(room) ! {
+            // A source that was closed has nothing more to give, as for `io.read_all`
+            if error_is(E.code, closed) {
+                this.exhausted = true
+                return 0
+            }
+            throw .io { message: "Reading the CSV failed", line: this.pos_line, column: this.pos_column }
+        }
+        if count == 0 {
+            this.exhausted = true
+            return 0
+        }
+        if count > room.length : count = room.length
+        this.end += count
+        return count
+    }
+
+    // A UTF-8 byte order mark at the very start is not part of the text
+    fn skip_bom() !Error {
+        // The first bytes may come in one read at a time
+        while this.end - this.at < 3 {
+            let count = this.read_more() !>
+            if count == 0 : break
+        }
+        let data = this.data
+        let at = this.at
+        if this.end - at >= 3 && data[at] == 0xef && data[at + 1] == 0xbb && data[at + 2] == 0xbf {
+            this.at += 3
+        }
+    }
+
+    // Takes the byte at `at`, which `fill` made sure is there
+    fn take() u8 {
+        let ch = this.data[this.at++]
+        this.step(ch)
+        return ch
+    }
+
+    // Moves the line and column past one byte. `\r\n` is one line end, and so is a lone `\r`.
+    fn step(ch: u8) $inline {
+        if ch == '\n' {
+            if !this.after_cr : this.pos_line++
+            this.pos_column = 1
+            this.after_cr = false
+        } else if ch == '\r' {
+            this.pos_line++
+            this.pos_column = 1
+            this.after_cr = true
+        } else {
+            if (ch & 0xc0) != 0x80 : this.pos_column++
+            this.after_cr = false
+        }
+    }
+}
+
+// Drops spaces and tabs from the end of `field`, but keeps its first `floor` bytes
+fn trim_end(field: ByteBuffer, floor: uint, delimiter: u8) {
+    let length = field.length
+    while length > floor && is_blank(field[length - 1], delimiter) : length--
+    if length < field.length : field.truncate(length)
+}

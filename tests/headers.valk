@@ -1,0 +1,145 @@
+use csv
+use valk.fs
+
+test "Rows by column name" {
+    let reader = csv.Reader.from_string("name,email,age\nada,ada@example.com,36\nbob,,41\ncy\n", csv.Options { header: true })
+    let header = reader.header() ! { assert(false) return }
+    assert(header == .{ "name", "email", "age" })
+
+    let first = reader.next_map() ! { assert(false) return }
+    if !isset(first) {
+        assert(false)
+        return
+    }
+    assert((first.get("name") !? "") == "ada")
+    assert((first.get("email") !? "") == "ada@example.com")
+    assert((first.get("age") !? "") == "36")
+    assert(reader.line == 2)
+
+    let second = reader.next_map() ! { assert(false) return }
+    if !isset(second) {
+        assert(false)
+        return
+    }
+    assert(second.has("email") && (second.get("email") !? "x") == "")
+
+    // A short row leaves its missing columns out
+    let third = reader.next_map() ! { assert(false) return }
+    if !isset(third) {
+        assert(false)
+        return
+    }
+    assert(third.length == 1)
+    assert(!third.has("age"))
+
+    let done = reader.next_map() ! { assert(false) return }
+    assert(!isset(done))
+}
+
+test "Columns by name" {
+    let reader = csv.Reader.from_string("id;name;name\n1;first;second\n", csv.Options { header: true, delimiter: ';' })
+    let name = reader.column("name") ! { assert(false) return }
+    // A name used twice is its first column
+    assert(name == 1)
+    let row = reader.next() ! { assert(false) return }
+    if !isset(row) {
+        assert(false)
+        return
+    }
+    assert(row[name] == "first")
+
+    // A name that is not there
+    reader.column("email") ! {
+        assert(error_is(E.code, header))
+        assert(E.message.contains("'email'"))
+        assert(E.line == 1)
+        return
+    }
+    assert(false)
+}
+
+test "The header is not a row" {
+    let reader = csv.Reader.from_string("\n# c\na,b\n1,2\n", csv.Options { header: true, comment: '#' })
+    let row = reader.next() ! { assert(false) return }
+    assert(isset(row) && row == .{ "1", "2" })
+    let header = reader.header() ! { assert(false) return }
+    assert(header == .{ "a", "b" })
+
+    // Without the option there is no header, and every row comes out
+    let plain = csv.Reader.from_string("a,b\n1,2\n")
+    let names = plain.header() ! { assert(false) return }
+    assert(names.length == 0)
+    let first = plain.next() ! { assert(false) return }
+    assert(isset(first) && first == .{ "a", "b" })
+    plain.next_map() ! {
+        assert(error_is(E.code, header))
+        return
+    }
+    assert(false)
+}
+
+test "A header and nothing else" {
+    let reader = csv.Reader.from_string("a,b\r\n", csv.Options { header: true })
+    let row = reader.next_map() ! { assert(false) return }
+    assert(!isset(row))
+    let header = reader.header() ! { assert(false) return }
+    assert(header == .{ "a", "b" })
+
+    // And an empty input has an empty header
+    let empty = csv.Reader.from_string("", csv.Options { header: true })
+    let names = empty.header() ! { assert(false) return }
+    assert(names.length == 0)
+}
+
+test "Parsing into maps" {
+    let maps = csv.parse_maps(bytes(.{ 0xef, 0xbb, 0xbf }) + "city,country\r\nParis,France\r\n\"Rio, de Janeiro\",Brazil\r\n") ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(maps.length == 2)
+    // The BOM is not part of the first name
+    assert((maps[0].get("city") !? "") == "Paris")
+    assert((maps[1].get("city") !? "") == "Rio, de Janeiro")
+    assert((maps[1].get("country") !? "") == "Brazil")
+}
+
+test "Reading a file" {
+    let path = temp_path("people.csv")
+    let text = ByteBuffer.new()
+    text.write("name,note\r\n")
+    let i: uint = 0
+    while i < 2000 {
+        text.write("person " + i + ",\"a note\r\nover \"\"two\"\" lines\"\r\n")
+        i++
+    }
+    fs.write(path, text) ! { assert(false) return }
+
+    // A small chunk, so fields cross many chunk boundaries
+    let reader = csv.Reader.open(path, csv.Options { header: true }, 7) ! { assert(false) return }
+    let count: uint = 0
+    let all_match = true
+    while true {
+        let row = reader.next_map() ! {
+            println(E.message)
+            all_match = false
+            break
+        }
+        if !isset(row) : break
+        if (row.get("name") !? "") != "person " + count : all_match = false
+        if (row.get("note") !? "") != "a note\r\nover \"two\" lines" : all_match = false
+        count++
+    }
+    assert(all_match)
+    assert(count == 2000)
+    assert(reader.line == 2 + 1999 * 2)
+
+    // Closing early
+    let early = csv.Reader.open(path) ! { assert(false) return }
+    let first = early.next() ! { assert(false) return }
+    assert(isset(first))
+    early.close()
+    let after = early.next() ! { assert(false) return }
+    assert(!isset(after))
+    fs.delete_file(path) _
+}

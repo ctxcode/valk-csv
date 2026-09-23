@@ -1,0 +1,253 @@
+use csv
+
+class Person {
+    name: String
+    age: uint
+    height: f64
+    admin: bool
+    email: ?String
+    score: ?int
+    team: String ("none")
+    level: u8 (1)
+}
+
+struct Point {
+    x: int
+    y: i32
+    label: String
+}
+
+test "Reading into a class" {
+    let people = csv.decode_to[Person]("
+name,age,height,admin,email,score,team,level
+Ada,36,1.72,true,ada@example.com,-5,core,3
+\"Hopper, Grace\",85,1.6,false,,,,
+") ! {
+        println(E.message + " at line " + E.line)
+        assert(false)
+        return
+    }
+    assert(people.length == 2)
+    let ada = people[0]
+    assert(ada.name == "Ada")
+    assert(ada.age == 36)
+    assert(ada.height == 1.72)
+    assert(ada.admin)
+    assert((ada.email ?? "") == "ada@example.com")
+    assert((ada.score ?? 0) == -5)
+    assert(ada.team == "core")
+    assert(ada.level == 3)
+
+    // Empty fields: null when nullable, the default when there is one
+    let grace = people[1]
+    assert(grace.name == "Hopper, Grace")
+    assert(!grace.admin)
+    assert(!isset(grace.email))
+    assert(!isset(grace.score))
+    assert(grace.team == "none")
+    assert(grace.level == 1)
+}
+
+test "Columns in any order, and more than needed" {
+    let people = csv.decode_to[Person]("extra;admin;age;name;height\r\nx;yes;7;Bo;2\r\n", csv.Options { delimiter: ';' }) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(people.length == 1)
+    assert(people[0].name == "Bo")
+    assert(people[0].age == 7)
+    assert(people[0].height == 2.0)
+    assert(people[0].admin)
+    // Columns that are not there give the default, or null
+    assert(people[0].team == "none")
+    assert(!isset(people[0].email))
+}
+
+test "Reading into a struct" {
+    let points = csv.decode_to[Point]("x,y,label\n1,-2,a\n 3 , 4 ,b\n") ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(points.length == 2)
+    assert(points[0].x == 1 && points[0].y == -2 && points[0].label == "a")
+    // Spaces around numbers are fine
+    assert(points[1].x == 3 && points[1].y == 4)
+}
+
+class Flags {
+    a: bool
+    b: bool
+    c: bool
+    d: bool
+    e: bool
+    f: bool
+}
+
+test "Bools" {
+    let flags = csv.decode_to[Flags]("a,b,c,d,e,f\ntrue,FALSE,Yes,no,1, 0 \n") ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    let f = flags[0]
+    assert(f.a && !f.b && f.c && !f.d && f.e && !f.f)
+}
+
+test "Fields that do not convert" {
+    // Not a number: points at the field
+    csv.decode_to[Point]("x,y,label\n1,2,a\n3,four,b\n") ! {
+        assert(error_is(E.code, type))
+        assert(E.message == "'four' in column 'y' is not a whole number that fits")
+        assert(E.line == 3)
+        assert(E.column == 3)
+    }
+    // Out of range for the type
+    csv.decode_to[Person]("name,age,height,admin,level\nA,1,1,true,300\n") ! {
+        assert(error_is(E.code, type))
+        assert(E.message.contains("'300'"))
+        assert(E.column == 12)
+    }
+    // A negative number into an unsigned field
+    csv.decode_to[Person]("name,age,height,admin\nA,-1,1,true\n") ! {
+        assert(error_is(E.code, type))
+        assert(E.message.contains("column 'age'"))
+    }
+    // Not a bool
+    csv.decode_to[Person]("name,age,height,admin\nA,1,1,maybe\n") ! {
+        assert(error_is(E.code, type))
+        assert(E.message.contains("not true or false"))
+    }
+    // An empty field for a number that has no default
+    csv.decode_to[Person]("name,age,height,admin\nA,,1,true\n") ! {
+        assert(error_is(E.code, type))
+    }
+    // A field on the second line of a row that spans two
+    csv.decode_to[Point]("label,x,y\n\"two\nlines\",1,y\n") ! {
+        assert(E.line == 3)
+        assert(E.column == 10)
+        return
+    }
+    assert(false)
+}
+
+test "Columns that are missing" {
+    // A field without a default needs its column
+    csv.decode_to[Person]("name,height,admin\nA,1,true\n") ! {
+        assert(error_is(E.code, header))
+        assert(E.message == "The header has no column 'age'")
+        assert(E.line == 1)
+    }
+    // A short row reads as empty fields
+    let points = csv.decode_to[Person]("name,age,height,admin,team\nA,1,1,true\n") ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(points[0].team == "none")
+    // No header at all is no rows
+    let none = csv.decode_to[Point]("") ! { assert(false) return }
+    assert(none.length == 0)
+}
+
+test "Writing objects" {
+    let people = Array[Person]{
+        Person { name: "Ada", age: 36, height: 1.72, admin: true, email: "ada@example.com", score: -5 }
+        Person { name: "Hopper, Grace", age: 85, height: 1.6, admin: false, email: null, score: null, team: " qa " }
+    }
+    let text = csv.encode_of(people)
+    assert(text == "name,age,height,admin,email,score,team,level\r\nAda,36,1.72,true,ada@example.com,-5,none,1\r\n\"Hopper, Grace\",85,1.6,false,,,\" qa \",1\r\n")
+
+    // And they read back as they went in
+    let back = csv.decode_to[Person](text) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(back.length == 2)
+    assert(back[1].name == "Hopper, Grace")
+    assert(back[1].height == 1.6)
+    assert(!isset(back[1].email))
+    assert(back[1].team == " qa ")
+    assert((back[0].score ?? 0) == -5)
+
+    // Structs too, in another dialect
+    let points = Array[Point]{ Point { x: 1, y: -2, label: "a;b" } }
+    let semi = csv.encode_of(points, csv.Options { delimiter: ';', line_ending: "\n" })
+    assert(semi == "x;y;label\n1;-2;\"a;b\"\n")
+    let again = csv.decode_to[Point](semi, csv.Options { delimiter: ';' }) ! { assert(false) return }
+    assert(again[0].label == "a;b" && again[0].y == -2)
+}
+
+class Measure {
+    small: f32
+    big: f64
+    huge: u64
+    tiny: i8
+}
+
+test "Numbers keep their value" {
+    let values = Array[Measure]{
+        Measure { small: 0.1, big: 0.1 + 0.2, huge: u64.$max, tiny: i8.$min }
+        Measure { small: -3.5, big: 1e300, huge: 0, tiny: 127 }
+    }
+    let back = csv.decode_to[Measure](csv.encode_of(values)) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(back[0].small == 0.1.to(f32))
+    assert(back[0].big == 0.1 + 0.2)
+    assert(back[0].huge == u64.$max)
+    assert(back[0].tiny == i8.$min)
+    assert(back[1].big == 1e300)
+    assert(back[1].tiny == 127)
+}
+
+test "Streaming objects" {
+    let text = "name,age,height,admin\r\na,1,1.5,true\r\n\"b\r\nb\",2,2.5,false\r\n"
+    let reader = csv.Reader.new(TrickleReader { text: text, step: 2 }, csv.Options { header: true }, 4)
+    let names = Array[String]{}
+    let total: uint = 0
+    while true {
+        let person = reader.next_to[Person]() ! {
+            println(E.message)
+            assert(false)
+            return
+        }
+        if !isset(person) : break
+        names.append(person.name)
+        total += person.age
+    }
+    assert(names == .{ "a", "b\r\nb" })
+    assert(total == 3)
+
+    // Structs too
+    let points = csv.Reader.from_string("label,x,y\np,1,2\nq,3,4\n", csv.Options { header: true })
+    let sum = 0
+    while true {
+        let point = points.next_to[Point]() ! { assert(false) return }
+        if !isset(point) : break
+        sum += point.x * point.y
+    }
+    assert(sum == 14)
+
+    // Without the header option there are no column names
+    let plain = csv.Reader.from_string(text)
+    plain.next_to[Person]() ! {
+        assert(error_is(E.code, header))
+        return
+    }
+    assert(false)
+}
+
+test "Writing objects one at a time" {
+    let out = TrickleWriter {}
+    let writer = csv.Writer.new(out, csv.Options { line_ending: "\n" })
+    writer.write_header_of[Point]() ! { assert(false) return }
+    writer.write_object(Point { x: 1, y: 2, label: "one" }) ! { assert(false) return }
+    writer.write_object(Point { x: 3, y: 4, label: "two\nlines" }) ! { assert(false) return }
+    writer.flush() ! { assert(false) return }
+    assert(out.out.to_string() == "x,y,label\n1,2,one\n3,4,\"two\nlines\"\n")
+}

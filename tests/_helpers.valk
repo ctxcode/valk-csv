@@ -1,0 +1,135 @@
+use csv
+use valk.io
+use valk.fs
+
+// A source that hands out at most `step` bytes per read, so every row, field and quote lands
+// across read boundaries somewhere
+class TrickleReader is io.Reader {
+    text: String
+    step: uint
+    at: uint (0)
+
+    + fn read(buf: local mut &[u8]) uint !io.IoError {
+        let count = this.text.length - this.at
+        if count > this.step : count = this.step
+        if count > buf.length : count = buf.length
+        let i: uint = 0
+        while i < count {
+            buf[i] = this.text[this.at + i]
+            i++
+        }
+        this.at += count
+        return count
+    }
+}
+
+// A source that fails after its first bytes
+class FailingReader is io.Reader {
+    given: bool (false)
+
+    + fn read(buf: local mut &[u8]) uint !io.IoError {
+        if this.given : throw .read
+        this.given = true
+        buf[0] = 'a'
+        buf[1] = ','
+        return 2
+    }
+}
+
+// A destination that takes a few bytes per write
+class TrickleWriter is io.Writer {
+    out: ByteBuffer (.new())
+    step: uint (3)
+    writes: uint (0)
+
+    + fn write(data: local &[u8]) uint !io.IoError {
+        this.writes++
+        let count = data.length > this.step ? this.step : data.length
+        this.out.write(data.view(0, count))
+        return count
+    }
+}
+
+// A destination that refuses everything
+class FailingWriter is io.Writer {
+    + fn write(data: local &[u8]) uint !io.IoError {
+        throw .write
+    }
+}
+
+// Every row a reader gives, read through a trickling source of `step` bytes per read and a
+// chunk of `chunk` bytes
+fn read_trickled(text: String, step: uint, chunk: uint, options: ?csv.Options (null)) Array[Array[String]] !csv.Error {
+    let reader = csv.Reader.new(TrickleReader { text: text, step: step }, options, chunk)
+    let rows = Array[Array[String]]{}
+    while true {
+        let row = reader.next() !>
+        if !isset(row) : break
+        rows.append(row)
+    }
+    return rows
+}
+
+// Whether the text reads as `expected` in one piece and in every chunking that matters
+fn reads_as(text: String, expected: Array[Array[String]], options: ?csv.Options (null)) bool {
+    let whole = csv.parse(text, options) ! {
+        println("parse failed: " + E.message + " at line " + E.line + ", column " + E.column)
+        return false
+    }
+    if whole != expected {
+        println("parse gave " + show(whole) + ", expected " + show(expected))
+        return false
+    }
+    let steps = Array[uint]{ 1, 2, 3, 5, 64 }
+    each steps as step {
+        let pieces = read_trickled(text, step, 4, options) ! {
+            println("trickled read failed: " + E.message)
+            return false
+        }
+        if pieces != expected {
+            println("trickled read (" + step + ") gave " + show(pieces) + ", expected " + show(expected))
+            return false
+        }
+    }
+    return true
+}
+
+// Rows as text, for messages
+fn show(rows: Array[Array[String]]) String {
+    let out = ByteBuffer.new()
+    out.write("[")
+    each rows as row, i {
+        if i > 0 : out.write(", ")
+        out.write("[")
+        each row as field, j {
+            if j > 0 : out.write(", ")
+            out.write("\"")
+            out.write(field.escape())
+            out.write("\"")
+        }
+        out.write("]")
+    }
+    out.write("]")
+    return out.to_string()
+}
+
+// A file of its own per test, under tests/tmp
+fn temp_path(name: String) String {
+    let dir = __DIR__ + "/tmp"
+    if !fs.exists(dir) : fs.create_dir(dir) _
+    let path = dir + "/" + name
+    fs.delete_file(path) _
+    return path
+}
+
+// The UTF-8 byte order mark
+fn bom() String {
+    return bytes(.{ 0xef, 0xbb, 0xbf })
+}
+
+// Text made of these bytes
+fn bytes(values: Array[u8]) String {
+    let out = ByteBuffer.new()
+    each values as value : out.write_byte(value)
+    return out.to_string()
+}

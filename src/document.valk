@@ -1,0 +1,69 @@
+/// Reads CSV text into rows of fields.
+///
+/// Every row is returned, the first one too: the `header` option is for a `Reader`, while
+/// `parse_maps` and `decode_to` always read a header.
+///
+/// ```valk
+/// let rows = csv.parse("name,age\nada,36\n") ! panic("%{E.message} at line %{E.line}")
+/// println(rows[1][0]) // ada
+/// ```
++ fn parse(text: String, options: ?Options (null)) Array[Array[String]] !Error {
+    let reader = Reader.from_string(text, options)
+    reader.use_header = false
+    let rows = Array[Array[String]]{}
+    while true {
+        let row = reader.next() !>
+        if !isset(row) : break
+        rows.append(row)
+    }
+    return rows
+}
+
+/// Reads CSV text whose first row is a header into one map per row, from column name to field.
+///
+/// A row shorter than the header leaves its missing columns out of its map.
+///
+/// ```valk
+/// let users = csv.parse_maps("name,age\nada,36\n") ! panic("%{E.message}")
+/// println(users[0].get("age") !? "") // 36
+/// ```
++ fn parse_maps(text: String, options: ?Options (null)) Array[Map[String]] !Error {
+    let reader = Reader.from_string(text, options)
+    reader.use_header = true
+    let maps = Array[Map[String]]{}
+    while true {
+        let map = reader.next_map() !>
+        if !isset(map) : break
+        maps.append(map)
+    }
+    return maps
+}
+
+/// Reads CSV text whose first row is a header into objects of your own class or struct.
+///
+/// Each field is read from the column with its name; columns without a field are ignored. The
+/// text converts to the type of the field: numbers, `true`/`false` (also `yes`/`no` and `1`/`0`,
+/// in any case) and strings, or a nullable one of those. An empty field gives `null` for a
+/// nullable field and the default for a field that has one. A field that is neither nullable nor
+/// has a default must have a column, and every number and bool must read.
+///
+/// ```valk
+/// class User {
+///     name: String
+///     age: uint
+///     email: ?String
+/// }
+///
+/// let users = csv.decode_to[User](text) ! panic("%{E.message} at line %{E.line}")
+/// ```
++ fn decode_to[T](text: String, options: ?Options (null)) Array[T] !Error {
+    let reader = Reader.from_string(text, options)
+    reader.use_header = true
+    let items = Array[T]{}
+    while true {
+        let row = reader.next() !>
+        if !isset(row) : break
+        items.append(decode_row[T](reader, row) !>)
+    }
+    return items
+}

@@ -1,0 +1,53 @@
+use csv
+use valk.io
+
+class Product {
+    sku: String
+    name: String
+    price: f64
+    stock: uint (0)
+    discontinued: bool (false)
+    note: ?String
+}
+
+fn main() {
+    let text = "sku,name,price,stock,discontinued,note
+A-1,Kettle,24.95,12,false,
+B-7,\"Mug, large\",8.5,140,false,\"says \"\"hello\"\"\"
+C-3,Toaster,39,0,true,\"two
+lines\"
+"
+
+    // Rows of fields
+    let rows = csv.parse(text) ! panic("%{E.message} at line %{E.line}")
+    println("rows: " + rows.length + ", the header first; the first product is " + rows[1][1])
+
+    // Straight into a class of your own
+    let products = csv.decode_to[Product](text) ! panic("%{E.message} at line %{E.line}")
+    each products as product {
+        println(product.sku + " " + product.name + " costs " + product.price + ", " + product.stock + " in stock")
+    }
+
+    // Row by row from any io.Reader, by column name
+    let reader = csv.Reader.new(text.reader(), csv.Options { header: true })
+    while true {
+        let row = reader.next_map() ! panic("%{E.message} at line %{E.line}")
+        if !isset(row) : break
+        println("line " + reader.line + ": " + (row.get("name") !? "") + " / " + (row.get("note") !? "").escape())
+    }
+
+    // And back out again, in another dialect
+    products[0].stock = 11
+    println("\n--- written back with ; ---")
+    print(csv.encode_of(products, csv.Options { delimiter: ';', line_ending: "\n" }))
+
+    // A writer streams rows to any io.Writer
+    let writer = csv.Writer.new(io.stdout(), csv.Options { line_ending: "\n" })
+    writer.write_row(.{ "total", products.length }) ! panic("%{E.message}")
+    writer.flush() ! panic("%{E.message}")
+
+    // A file that breaks the rules says where
+    csv.parse("a,b\n\"open,c\n", csv.Options { strict: true }) ! {
+        println("refused: " + E.message + " (line " + E.line + ", column " + E.column + ")")
+    }
+}

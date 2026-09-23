@@ -1,0 +1,149 @@
+use csv
+
+// What a failed read said
+class Failure {
+    code: String
+    message: String
+    line: uint
+    column: uint
+}
+
+// The error a text gives, in one piece and through a trickling source, which must agree
+fn error_of(text: String, options: ?csv.Options (null)) ?Failure {
+    let found: ?Failure = null
+    csv.parse(text, options) ! {
+        let code = "other"
+        if error_is(E.code, syntax) : code = "syntax"
+        else if error_is(E.code, fields) : code = "fields"
+        else if error_is(E.code, header) : code = "header"
+        else if error_is(E.code, type) : code = "type"
+        else if error_is(E.code, io) : code = "io"
+        found = Failure { code: code, message: E.message, line: E.line, column: E.column }
+    }
+    let trickled: ?Failure = null
+    read_trickled(text, 1, 4, options) ! {
+        let code = "other"
+        if error_is(E.code, syntax) : code = "syntax"
+        else if error_is(E.code, fields) : code = "fields"
+        else if error_is(E.code, header) : code = "header"
+        else if error_is(E.code, type) : code = "type"
+        else if error_is(E.code, io) : code = "io"
+        trickled = Failure { code: code, message: E.message, line: E.line, column: E.column }
+    }
+    if !isset(found) || !isset(trickled) : return null
+    if found.code != trickled.code || found.message != trickled.message || found.line != trickled.line || found.column != trickled.column {
+        println("the trickled read failed elsewhere: " + trickled.message + " at " + trickled.line + ":" + trickled.column)
+        return null
+    }
+    return found
+}
+
+test "A quoted field that is not closed" {
+    // Points at the opening quote
+    let e = error_of("a,b\nc,\"open\nmore\n") ?! { assert(false) return }
+    assert(e.code == "syntax")
+    assert(e.message == "A quoted field is not closed")
+    assert(e.line == 2)
+    assert(e.column == 3)
+
+    // In strict mode or not, and at the very end
+    let strict = error_of("\"", csv.Options { strict: true }) ?! { assert(false) return }
+    assert(strict.code == "syntax")
+    assert(strict.line == 1 && strict.column == 1)
+
+    // A doubled quote does not close it
+    let doubled = error_of("x\n\"a\"\"") ?! { assert(false) return }
+    assert(doubled.line == 2 && doubled.column == 1)
+}
+
+test "Strict quotes" {
+    let strict = csv.Options { strict: true }
+    // A quote inside an unquoted field, at the quote
+    let inside = error_of("ab,c\"d\n", strict) ?! { assert(false) return }
+    assert(inside.code == "syntax")
+    assert(inside.line == 1 && inside.column == 5)
+    assert(inside.message.contains("unquoted field"))
+
+    // Text after a closing quote, at the text
+    let after = error_of("a\n\"b\"c,d\n", strict) ?! { assert(false) return }
+    assert(after.code == "syntax")
+    assert(after.line == 2 && after.column == 4)
+    assert(after.message.contains("after the closing quote"))
+
+    // A space after a closing quote is text too, unless trimming is on
+    let space = error_of("\"b\" ,d\n", strict) ?! { assert(false) return }
+    assert(space.column == 4)
+    assert(reads_as("\"b\" ,d\n", .{ .{ "b", "d" } }, csv.Options { strict: true, trim: true }))
+
+    // What follows the rules reads as usual
+    assert(reads_as("\"a\"\"b\",\"c\nd\",e\r\n", .{ .{ "a\"b", "c\nd", "e" } }, strict))
+}
+
+test "Strict field counts" {
+    let strict = csv.Options { strict: true }
+    // Too few: the row
+    let few = error_of("a,b,c\n1,2,3\n4,5\n", strict) ?! { assert(false) return }
+    assert(few.code == "fields")
+    assert(few.message == "This row has 2 fields, where the first row has 3")
+    assert(few.line == 3 && few.column == 1)
+
+    // Too many: the first field too many, on the line it is on
+    let many = error_of("a,b\r\n\"x\ny\",2,3\r\n", strict) ?! { assert(false) return }
+    assert(many.code == "fields")
+    assert(many.line == 3)
+    assert(many.column == 6)
+
+    // Empty lines and comments are not rows
+    assert(reads_as("a,b\n\n# note\n1,2\n", .{ .{ "a", "b" }, .{ "1", "2" } }, csv.Options { strict: true, comment: '#' }))
+
+    // An empty line that is kept is a row of one field
+    let kept = error_of("a,b\n\n1,2\n", csv.Options { strict: true, skip_empty_lines: false }) ?! { assert(false) return }
+    assert(kept.line == 2)
+
+    // The header counts as the first row
+    let reader = csv.Reader.from_string("a,b\n1,2,3\n", csv.Options { strict: true, header: true })
+    reader.next() ! {
+        assert(error_is(E.code, fields))
+        assert(E.line == 2)
+        return
+    }
+    assert(false)
+}
+
+test "Columns count characters" {
+    // Three characters of two bytes before the quote
+    let e = error_of("ééé\"x\n", csv.Options { strict: true }) ?! { assert(false) return }
+    assert(e.column == 4)
+    // CRLF, CR and LF each end one line
+    let lines = error_of("a\r\nb\rc\nd\r\n\"", csv.Options { strict: true }) ?! { assert(false) return }
+    assert(lines.line == 5)
+}
+
+test "A failing source" {
+    let reader = csv.Reader.new(FailingReader {})
+    reader.next() ! {
+        assert(error_is(E.code, io))
+        assert(E.line == 1)
+        return
+    }
+    assert(false)
+}
+
+test "A file that is not there" {
+    csv.Reader.open(__DIR__ + "/not-there.csv") ! {
+        assert(error_is(E.code, io))
+        assert(E.message.contains("not-there.csv"))
+        return
+    }
+    assert(false)
+}
+
+test "A failing destination" {
+    let writer = csv.Writer.new(FailingWriter {})
+    writer.write_row(.{ "a", "b" }) ! { assert(false) return }
+    writer.flush() ! {
+        assert(error_is(E.code, io))
+        return
+    }
+    assert(false)
+}

@@ -1,0 +1,211 @@
+use csv
+
+test "Plain rows" {
+    assert(reads_as("a,b,c\n1,2,3\n", .{ .{ "a", "b", "c" }, .{ "1", "2", "3" } }))
+    // One column
+    assert(reads_as("a\nb\n", .{ .{ "a" }, .{ "b" } }))
+    // Nothing at all
+    assert(reads_as("", Array[Array[String]]{}))
+    // Spaces are part of a field
+    assert(reads_as(" a , b \n", .{ .{ " a ", " b " } }))
+    // UTF-8 passes through untouched
+    assert(reads_as("naïve,日本,😀\n", .{ .{ "naïve", "日本", "😀" } }))
+}
+
+test "Line endings" {
+    let expected: Array[Array[String]] = .{ .{ "a", "b" }, .{ "c", "d" } }
+    assert(reads_as("a,b\nc,d\n", expected))
+    assert(reads_as("a,b\r\nc,d\r\n", expected))
+    // A lone CR ends a line too, as in old Mac files
+    assert(reads_as("a,b\rc,d\r", expected))
+    // Mixed in one file
+    assert(reads_as("a,b\r\nc,d\n", expected))
+    // The last line may go without a line end
+    assert(reads_as("a,b\nc,d", expected))
+    assert(reads_as("a,b\r\nc,d", expected))
+}
+
+test "Empty fields" {
+    assert(reads_as(",\n", .{ .{ "", "" } }))
+    assert(reads_as("a,,c\n", .{ .{ "a", "", "c" } }))
+    assert(reads_as(",b,\n", .{ .{ "", "b", "" } }))
+    // A delimiter at the very end still has an empty field after it
+    assert(reads_as("a,b,", .{ .{ "a", "b", "" } }))
+    assert(reads_as("\"\",\"\"\n", .{ .{ "", "" } }))
+    // One quoted empty field is a row, not an empty line
+    assert(reads_as("\"\"\n", .{ .{ "" } }))
+}
+
+test "Quoted fields" {
+    assert(reads_as("\"a\",\"b\"\n", .{ .{ "a", "b" } }))
+    // The delimiter inside quotes is text
+    assert(reads_as("\"a,b\",c\n", .{ .{ "a,b", "c" } }))
+    // Two quotes inside quotes are one quote
+    assert(reads_as("\"say \"\"hi\"\"\",x\n", .{ .{ "say \"hi\"", "x" } }))
+    assert(reads_as("\"\"\"\"\n", .{ .{ "\"" } }))
+    assert(reads_as("\"\"\"\"\"\"\n", .{ .{ "\"\"" } }))
+    // Quoted and unquoted fields mix
+    assert(reads_as("1,\"two\",3\n", .{ .{ "1", "two", "3" } }))
+    // A quoted field at the end of the input without a line end
+    assert(reads_as("a,\"b\"", .{ .{ "a", "b" } }))
+    // Spaces inside quotes stay
+    assert(reads_as("\"  a  \"\n", .{ .{ "  a  " } }))
+}
+
+test "Line breaks inside quotes" {
+    assert(reads_as("\"line one\nline two\",x\ny,z\n", .{ .{ "line one\nline two", "x" }, .{ "y", "z" } }))
+    // A CRLF inside quotes is kept as it is
+    assert(reads_as("\"a\r\nb\"\r\nc\r\n", .{ .{ "a\r\nb" }, .{ "c" } }))
+    // So is a lone CR
+    assert(reads_as("\"a\rb\"\n", .{ .{ "a\rb" } }))
+    // Empty lines inside quotes are part of the field, not skipped
+    assert(reads_as("\"a\n\n\nb\"\n", .{ .{ "a\n\n\nb" } }))
+    // A quoted field of only a line break
+    assert(reads_as("\"\n\",\"\r\n\"\n", .{ .{ "\n", "\r\n" } }))
+}
+
+test "Byte order mark" {
+    let expected: Array[Array[String]] = .{ .{ "name", "age" }, .{ "ada", "36" } }
+    assert(reads_as(bom() + "name,age\nada,36\n", expected))
+    // Only at the very start
+    let later = csv.parse("a\n" + bom() + "b\n") ! { assert(false) return }
+    assert(later[1][0] == bom() + "b")
+    // A BOM and nothing else
+    assert(reads_as(bom(), Array[Array[String]]{}))
+    // Before a quoted field
+    assert(reads_as(bom() + "\"a\"\n", .{ .{ "a" } }))
+    // Two bytes of it are not a BOM
+    let half = bytes(.{ 0xef, 0xbb })
+    assert(reads_as(half + "x\n", .{ .{ half + "x" } }))
+}
+
+test "Empty lines" {
+    // Skipped by default, wherever they are
+    assert(reads_as("\n\na\n\n\nb\n\n", .{ .{ "a" }, .{ "b" } }))
+    assert(reads_as("\r\n\r\na\r\n\r\nb\r\n", .{ .{ "a" }, .{ "b" } }))
+    // Or kept as a row with one empty field
+    let options = csv.Options { skip_empty_lines: false }
+    assert(reads_as("a\n\nb\n", .{ .{ "a" }, .{ "" }, .{ "b" } }, options))
+    assert(reads_as("\r\n", .{ .{ "" } }, options))
+    assert(reads_as("a\r\n\r\nb", .{ .{ "a" }, .{ "" }, .{ "b" } }, options))
+    // A line of spaces is not empty
+    assert(reads_as("a\n  \nb\n", .{ .{ "a" }, .{ "  " }, .{ "b" } }))
+}
+
+test "Other delimiters" {
+    let semicolon = csv.Options { delimiter: ';' }
+    assert(reads_as("a;b,c;\"d;e\"\n", .{ .{ "a", "b,c", "d;e" } }, semicolon))
+    let tab = csv.Options { delimiter: '\t' }
+    assert(reads_as("a\tb c\t\"d\te\"\n", .{ .{ "a", "b c", "d\te" } }, tab))
+    let pipe = csv.Options { delimiter: '|' }
+    assert(reads_as("a|b||c\n", .{ .{ "a", "b", "", "c" } }, pipe))
+}
+
+test "Another quote character" {
+    let single = csv.Options { quote: '\'' }
+    assert(reads_as("'a,b','it''s',\"c\"\n", .{ .{ "a,b", "it's", "\"c\"" } }, single))
+}
+
+test "Trimming" {
+    let trim = csv.Options { trim: true }
+    assert(reads_as("  a  ,\tb\t, c\n", .{ .{ "a", "b", "c" } }, trim))
+    // Spaces around a quoted field go, the ones inside stay
+    assert(reads_as("  \" a \"  , b\n", .{ .{ " a ", "b" } }, trim))
+    // A field of spaces is empty
+    assert(reads_as("a,   ,b\n", .{ .{ "a", "", "b" } }, trim))
+    assert(reads_as("a,  \n", .{ .{ "a", "" } }, trim))
+    // Spaces inside an unquoted field stay
+    assert(reads_as(" a b \n", .{ .{ "a b" } }, trim))
+    // A tab that is the delimiter is not trimmed
+    let tabs = csv.Options { trim: true, delimiter: '\t' }
+    assert(reads_as(" a \t b \n", .{ .{ "a", "b" } }, tabs))
+    assert(reads_as("a\t\tb\n", .{ .{ "a", "", "b" } }, tabs))
+}
+
+test "Comments" {
+    let options = csv.Options { comment: '#' }
+    assert(reads_as("# a comment\na,b\n#another, with a \"quote\nc,d\n", .{ .{ "a", "b" }, .{ "c", "d" } }, options))
+    // Only at the start of a line
+    assert(reads_as("a,#b\n", .{ .{ "a", "#b" } }, options))
+    assert(reads_as(" #a\n", .{ .{ " #a" } }, options))
+    // A quoted field that starts with the comment byte is data
+    assert(reads_as("\"#a\",b\n", .{ .{ "#a", "b" } }, options))
+    // A comment on the last line, with and without a line end
+    assert(reads_as("a\n# end", .{ .{ "a" } }, options))
+    assert(reads_as("a\r\n# end\r\n", .{ .{ "a" } }, options))
+    // Without the option it is a field like any other
+    assert(reads_as("# a\n", .{ .{ "# a" } }))
+}
+
+test "Quotes that break the rules" {
+    // Outside strict mode a quote inside an unquoted field is text, and text after a closing
+    // quote joins the field, the way Python's csv module reads them
+    assert(reads_as("a\"b,c\n", .{ .{ "a\"b", "c" } }))
+    assert(reads_as("ab\",c\n", .{ .{ "ab\"", "c" } }))
+    assert(reads_as("\"ab\"cd,e\n", .{ .{ "abcd", "e" } }))
+    assert(reads_as("\"a\"b\"c\",d\n", .{ .{ "ab\"c\"", "d" } }))
+    assert(reads_as("\"a\" ,b\n", .{ .{ "a ", "b" } }))
+    assert(reads_as(" \"a\",b\n", .{ .{ " \"a\"", "b" } }))
+}
+
+test "Rows of different lengths" {
+    // Allowed outside strict mode
+    assert(reads_as("a,b,c\nd\ne,f\n", .{ .{ "a", "b", "c" }, .{ "d" }, .{ "e", "f" } }))
+}
+
+test "Streaming from a reader" {
+    // A long quoted field over many chunks, with doubled quotes and line breaks
+    let long = ByteBuffer.new()
+    let expected = ByteBuffer.new()
+    long.write("id,text\r\n1,\"")
+    let i: uint = 0
+    while i < 500 {
+        long.write("word \"\"quoted\"\", line\r\n")
+        expected.write("word \"quoted\", line\r\n")
+        i++
+    }
+    long.write("\"\r\n2,end\r\n")
+    let text = long.to_string()
+    let rows: Array[Array[String]] = .{ .{ "id", "text" }, .{ "1", expected.to_string() }, .{ "2", "end" } }
+    assert(reads_as(text, rows))
+
+    // Every chunk size from 4 to 40, with reads of every size up to 7 bytes
+    let sample = bom() + "a,\"b\r\nc\",\"\"\"\"\r\n\r\n\"x\"\"y\",z,\r\n# not a comment\r\nlast"
+    let sample_rows: Array[Array[String]] = .{ .{ "a", "b\r\nc", "\"" }, .{ "x\"y", "z", "" }, .{ "# not a comment" }, .{ "last" } }
+    let whole = csv.parse(sample) ! { assert(false) return }
+    assert(whole == sample_rows)
+    let all_match = true
+    let chunk: uint = 4
+    while chunk <= 40 {
+        let step: uint = 1
+        while step <= 7 {
+            let rows_read = read_trickled(sample, step, chunk) ! {
+                all_match = false
+                step++
+                continue
+            }
+            if rows_read != sample_rows : all_match = false
+            step++
+        }
+        chunk++
+    }
+    assert(all_match)
+}
+
+test "Reading row by row" {
+    let reader = csv.Reader.from_string("a,b\n\n\"multi\nline\",c\nd,e\n")
+    let first = reader.next() ! { assert(false) return }
+    assert(isset(first) && first == .{ "a", "b" })
+    assert(reader.line == 1)
+    let second = reader.next() ! { assert(false) return }
+    assert(isset(second) && second == .{ "multi\nline", "c" })
+    assert(reader.line == 3)
+    let third = reader.next() ! { assert(false) return }
+    assert(isset(third) && third == .{ "d", "e" })
+    assert(reader.line == 5)
+    let done = reader.next() ! { assert(false) return }
+    assert(!isset(done))
+    // And it stays done
+    let again = reader.next() ! { assert(false) return }
+    assert(!isset(again))
+}

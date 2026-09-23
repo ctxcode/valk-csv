@@ -1,0 +1,59 @@
+/// How CSV is read and written: the dialect.
+///
+/// Every field has a default, so only what differs has to be named:
+///
+/// ```valk
+/// let options = csv.Options { delimiter: ';', header: true }
+/// ```
+///
+/// The same options can be given to a `Reader` and a `Writer`, so a file is written the way it
+/// is read. Options that make no sense, such as a delimiter that is also the quote, panic when
+/// the reader or writer is made.
++ class Options {
+    /// The byte between fields: `,` by default, `;` or `\t` for other dialects.
+    + delimiter: u8 (',')
+    /// The byte that quotes a field. Inside a quoted field it is written twice.
+    + quote: u8 ('"')
+    /// Reading: whether the first row is the header. A `Reader` then keeps it in `header` instead
+    /// of returning it, and can hand out rows by column name.
+    + header: bool (false)
+    /// Reading: removes spaces and tabs around unquoted fields, and allows them around quoted
+    /// fields.
+    + trim: bool (false)
+    /// Reading: skips lines that are empty. When false an empty line is a row with one empty
+    /// field.
+    + skip_empty_lines: bool (true)
+    /// Reading: skips lines that start with this byte, such as `#`. 0 turns comments off.
+    + comment: u8 (0)
+    /// Reading: every row must have as many fields as the first row, and quotes must follow
+    /// RFC 4180 exactly.
+    + strict: bool (false)
+    /// Writing: the text after every row. RFC 4180 asks for `\r\n`; `\n` is the other common
+    /// choice.
+    + line_ending: String ("\r\n")
+    /// Writing: quotes every field, not only the ones that need it.
+    + quote_all: bool (false)
+    /// Writing: starts the output with a UTF-8 byte order mark, which Excel needs to read the
+    /// text as UTF-8.
+    + bom: bool (false)
+}
+
+// Options that cannot work are a mistake in the program, not in the data
+fn check_options(options: Options) {
+    let delimiter = options.delimiter
+    let quote = options.quote
+    let comment = options.comment
+    if delimiter == quote : panic("CSV options: the delimiter and the quote are the same byte")
+    if delimiter == '\r' || delimiter == '\n' : panic("CSV options: the delimiter cannot be a line break")
+    if quote == '\r' || quote == '\n' : panic("CSV options: the quote cannot be a line break")
+    if comment != 0 {
+        if comment == delimiter || comment == quote : panic("CSV options: the comment byte is also the delimiter or the quote")
+        if comment == '\r' || comment == '\n' : panic("CSV options: the comment byte cannot be a line break")
+    }
+    if options.line_ending.length == 0 : panic("CSV options: the line ending is empty")
+}
+
+// Spaces and tabs, which `trim` removes, unless the byte is the delimiter
+fn is_blank(ch: u8, delimiter: u8) bool $inline {
+    return (ch == ' ' || ch == '\t') && ch != delimiter
+}

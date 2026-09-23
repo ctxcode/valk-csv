@@ -1,0 +1,187 @@
+use csv
+
+// A row written on its own
+fn line_of(fields: Array[String], options: ?csv.Options (null)) String {
+    return csv.encode(.{ fields }, options)
+}
+
+test "Writing rows" {
+    assert(csv.encode(.{ .{ "a", "b" }, .{ "1", "2" } }) == "a,b\r\n1,2\r\n")
+    assert(csv.encode(Array[Array[String]]{}) == "")
+    // Numbers turn into text on the way in
+    assert(line_of(.{ "x", 5, 2.5 }) == "x,5,2.5\r\n")
+    // Other line endings and delimiters
+    assert(csv.encode(.{ .{ "a", "b" }, .{ "c" } }, csv.Options { line_ending: "\n" }) == "a,b\nc\n")
+    assert(line_of(.{ "a", "b;c", "d,e" }, csv.Options { delimiter: ';' }) == "a;\"b;c\";d,e\r\n")
+    assert(line_of(.{ "a", "b\tc", "d e" }, csv.Options { delimiter: '\t' }) == "a\t\"b\tc\"\td e\r\n")
+}
+
+test "What gets quoted" {
+    // Nothing that does not need it
+    assert(line_of(.{ "plain", "with space", "naïve", "a'b", "#x" }) == "plain,with space,naïve,a'b,#x\r\n")
+    // The delimiter
+    assert(line_of(.{ "a,b" }) == "\"a,b\"\r\n")
+    // The quote, written twice
+    assert(line_of(.{ "say \"hi\"" }) == "\"say \"\"hi\"\"\"\r\n")
+    assert(line_of(.{ "\"" }) == "\"\"\"\"\r\n")
+    // Line breaks of every kind
+    assert(line_of(.{ "a\nb" }) == "\"a\nb\"\r\n")
+    assert(line_of(.{ "a\rb" }) == "\"a\rb\"\r\n")
+    assert(line_of(.{ "a\r\nb" }) == "\"a\r\nb\"\r\n")
+    // Spaces or tabs at either end, which a trimming reader would lose
+    assert(line_of(.{ " a", "b ", "\tc", "d\t", "e f" }) == "\" a\",\"b \",\"\tc\",\"d\t\",e f\r\n")
+    // Empty fields stay empty, unless the row has only one
+    assert(line_of(.{ "", "a", "" }) == ",a,\r\n")
+    assert(line_of(.{ "" }) == "\"\"\r\n")
+    // A row of no fields is an empty line
+    assert(line_of(Array[String]{}) == "\r\n")
+    // Another quote character
+    assert(line_of(.{ "it's", "\"x\"" }, csv.Options { quote: '\'' }) == "'it''s',\"x\"\r\n")
+}
+
+test "Quoting around comments" {
+    let options = csv.Options { comment: '#' }
+    // Only the first field, and only when comments are on
+    assert(line_of(.{ "#a", "#b" }, options) == "\"#a\",#b\r\n")
+    assert(line_of(.{ "a#", "b" }, options) == "a#,b\r\n")
+    let text = csv.encode(.{ .{ "#not a comment", "x" } }, options)
+    let rows = csv.parse(text, options) ! { assert(false) return }
+    assert(rows == .{ .{ "#not a comment", "x" } })
+}
+
+test "Quoting everything" {
+    let options = csv.Options { quote_all: true }
+    assert(line_of(.{ "a", "", "b\"c" }, options) == "\"a\",\"\",\"b\"\"c\"\r\n")
+    assert(line_of(.{ "" }, options) == "\"\"\r\n")
+}
+
+test "A byte order mark" {
+    let text = csv.encode(.{ .{ "a" }, .{ "b" } }, csv.Options { bom: true })
+    assert(text == bom() + "a\r\nb\r\n")
+    // Which the reader skips
+    let rows = csv.parse(text) ! { assert(false) return }
+    assert(rows == .{ .{ "a" }, .{ "b" } })
+}
+
+test "Writing to a ByteBuffer" {
+    let out = ByteBuffer.new()
+    let writer = csv.Writer.new(out)
+    writer.write_row(.{ "a", "b" }) ! { assert(false) return }
+    // Straight in, no flush needed
+    assert(out.to_string() == "a,b\r\n")
+    writer.write_rows(.{ .{ "c" }, .{ "d", "e" } }) ! { assert(false) return }
+    writer.flush() ! { assert(false) return }
+    assert(out.to_string() == "a,b\r\nc\r\nd,e\r\n")
+}
+
+test "Writing to a writer that takes little at a time" {
+    let out = TrickleWriter {}
+    let writer = csv.Writer.new(out, csv.Options { line_ending: "\n" })
+    writer.write_row(.{ "one", "two, three" }) ! { assert(false) return }
+    // Collected until the flush
+    assert(out.writes == 0)
+    writer.flush() ! { assert(false) return }
+    assert(out.out.to_string() == "one,\"two, three\"\n")
+    assert(out.writes > 1)
+
+    // Many rows pass on by themselves
+    let big = TrickleWriter { step: 1000000 }
+    let many = csv.Writer.new(big)
+    let i: uint = 0
+    while i < 10000 {
+        many.write_row(.{ "row " + i, "some text to fill the buffer" }) ! { assert(false) return }
+        i++
+    }
+    assert(big.writes > 0)
+    many.flush() ! { assert(false) return }
+    let rows = csv.parse(big.out.to_string()) ! { assert(false) return }
+    assert(rows.length == 10000)
+    assert(rows[9999] == .{ "row 9999", "some text to fill the buffer" })
+}
+
+// A small generator, so the round trips are the same on every run
+class Dice {
+    state: uint (12345)
+
+    fn next(below: uint) uint {
+        this.state = (this.state * 1103515245 + 12345) & 0x7fffffff
+        return (this.state >> 8) % below
+    }
+}
+
+// Rows of fields that mix every character that matters to CSV; `width` fields each, or 1 to 5
+// when it is 0
+fn tricky_rows(dice: Dice, count: uint, width: uint) Array[Array[String]] {
+    let pieces = Array[String]{ "a", "b", "7", " ", "\t", ",", ";", "\"", "'", "\n", "\r", "\r\n", "#", "é", "日", "x y", "|" }
+    let rows = Array[Array[String]]{}
+    let r: uint = 0
+    while r < count {
+        let row = Array[String]{}
+        let fields = width > 0 ? width : 1 + dice.next(5)
+        let f: uint = 0
+        while f < fields {
+            let field = ByteBuffer.new()
+            let length = dice.next(6)
+            let i: uint = 0
+            while i < length {
+                field.write(pieces.get(dice.next(pieces.length)) !? "")
+                i++
+            }
+            row.append(field.to_string())
+            f++
+        }
+        rows.append(row)
+        r++
+    }
+    return rows
+}
+
+test "Round trips" {
+    let dice = Dice {}
+    let rows = tricky_rows(dice, 300, 0)
+    let dialects = Array[csv.Options]{
+        csv.Options {}
+        csv.Options { line_ending: "\n" }
+        csv.Options { delimiter: ';' }
+        csv.Options { delimiter: '\t', line_ending: "\n" }
+        csv.Options { delimiter: '|', quote: '\'' }
+        csv.Options { quote_all: true, bom: true }
+        // Quoted spaces survive a reader that trims
+        csv.Options { trim: true }
+        csv.Options { comment: '#', trim: true }
+        csv.Options { skip_empty_lines: false }
+    }
+    let all_match = true
+    each dialects as options, index {
+        let text = csv.encode(rows, options)
+        let back = csv.parse(text, options) ! {
+            println("dialect " + index + ": " + E.message + " at line " + E.line)
+            all_match = false
+            continue
+        }
+        if back != rows {
+            println("dialect " + index + " did not read back the same rows")
+            all_match = false
+        }
+        // And through a source that hands out a few bytes at a time
+        let trickled = read_trickled(text, 3, 5, options) ! {
+            all_match = false
+            continue
+        }
+        if trickled != rows : all_match = false
+    }
+    assert(all_match)
+}
+
+test "Round trips in strict mode" {
+    let dice = Dice { state: 99 }
+    let rows = tricky_rows(dice, 200, 4)
+    let options = csv.Options { strict: true, comment: '#', trim: true }
+    let text = csv.encode(rows, options)
+    let back = csv.parse(text, options) ! {
+        println(E.message + " at line " + E.line)
+        assert(false)
+        return
+    }
+    assert(back == rows)
+}

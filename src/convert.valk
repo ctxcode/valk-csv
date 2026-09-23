@@ -1,0 +1,120 @@
+@ignore_access
+
+// Rows into the fields of a class, and back. These are generated for the caller's own types,
+// whose fields are usually private to the caller's package, hence the access override.
+
+// One row as `T`, each field read from the column with its name
+fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
+    #if !T.$is_structural
+    #error "CSV rows can only be read into a class or a struct"
+    #else
+    return T {
+        #loop properties T as prop
+        prop: <{
+            let index = reader.columns.get(prop.name) ! {
+                #if prop.$has_explicit_default_value || prop.$type.$is_nullable
+                return prop.$default_value
+                #else
+                throw .header {
+                    message: "The header has no column '" + prop.name + "'"
+                    line: reader.header_line
+                    column: 1
+                }
+                #end
+            }
+            // A row shorter than the header has empty fields at the end
+            let text = row.get(index) !? ""
+            #if prop.$has_explicit_default_value || prop.$type.$is_nullable
+            if text.length == 0 : return prop.$default_value
+            #end
+            let line = reader.field_lines.get(index) !? reader.line
+            let column = reader.field_columns.get(index) !? 1
+            return field_to[prop](text, prop.name, line, column) !>
+        }
+        #end
+    }
+    #end
+}
+
+// One field as the type `P`
+fn field_to[P](text: String, name: String, line: uint, column: uint) P !Error {
+    #if P.$is_nullable
+    if text.length == 0 : return null
+    return field_to[nonnull(P)](text, name, line, column) !>
+    #elif P.$is_type_of(String)
+    return text
+    #elif P.$is_bool
+    let word = trim_blanks(text)
+    if word == "1" || word.equals_ignore_ascii_case("true") || word.equals_ignore_ascii_case("yes") : return true
+    if word == "0" || word.equals_ignore_ascii_case("false") || word.equals_ignore_ascii_case("no") : return false
+    throw .type { message: "'" + text + "' in column '" + name + "' is not true or false", line: line, column: column }
+    #elif P.$is_enum
+    #error "A CSV field cannot be read into an enum; read it as a String or a number and convert it"
+    #elif P.$is_integer
+    return trim_blanks(text).to_number[P]() ! {
+        throw .type { message: "'" + text + "' in column '" + name + "' is not a whole number that fits", line: line, column: column }
+    }
+    #elif P.$is_float
+    return trim_blanks(text).to_number[P]() ! {
+        throw .type { message: "'" + text + "' in column '" + name + "' is not a number", line: line, column: column }
+    }
+    #else
+    #error "A CSV field can only be read into a String, a number or a bool, or a nullable one of those"
+    #end
+}
+
+// The names of the fields of `T` in order: the header row
+fn header_of[T]() Array[String] {
+    #if !T.$is_structural
+    #error "Only a class or a struct can be written as a CSV row"
+    #else
+    let names = Array[String]{}
+    #loop properties T as prop
+    names.append(prop.name)
+    #end
+    return names
+    #end
+}
+
+// The fields of a class or struct as text, in the order of `header_of`
+fn row_of(item: $T) Array[String] {
+    #if !T.$is_structural
+    #error "Only a class or a struct can be written as a CSV row"
+    #else
+    let row = Array[String]{}
+    #loop object item as prop
+    row.append(field_text(prop))
+    #end
+    return row
+    #end
+}
+
+// A value as the text of a field; null is an empty field
+fn field_text(value: $V) String {
+    #if V.$is_nullable
+    if !isset(value) : return ""
+    return field_text(value)
+    #elif V.$is_type_of(String)
+    return value
+    #elif V.$is_bool
+    return value ? "true" : "false"
+    #elif V.$is_enum
+    #error "A CSV field cannot be written from an enum; convert it to a String or a number"
+    #elif V.$is_float
+    return value.to_shortest_string()
+    #elif V.$is_integer
+    return value.to_string()
+    #else
+    #error "A CSV field can only be written from a String, a number or a bool, or a nullable one of those"
+    #end
+}
+
+// Numbers and bools may have spaces around them
+fn trim_blanks(text: String) String {
+    let start: uint = 0
+    let end = text.length
+    while start < end && (text[start] == ' ' || text[start] == '\t') : start++
+    while end > start && (text[end - 1] == ' ' || text[end - 1] == '\t') : end--
+    if start == 0 && end == text.length : return text
+    return text.range(start, end - start)
+}

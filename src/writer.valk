@@ -1,0 +1,179 @@
+use valk.io
+
+// Rows collect in the writer until this many bytes wait, then go out in one write
+value FLUSH_SIZE (65536)
+
+/// Writes CSV rows to any `io.Writer`: a `fs.FileStream`, a socket or a `ByteBuffer`.
+///
+/// Rows are collected and passed on in large writes, so call `flush` after the last one. A
+/// `ByteBuffer` is written into directly and needs no flush.
+///
+/// A field is quoted only when it has to be: when it holds the delimiter, the quote, `\r` or
+/// `\n`, or starts or ends with a space or a tab, which a reader that trims would lose. A quote
+/// inside a quoted field is written twice. A row of one empty field is written as `""`, so it
+/// does not become an empty line, and a row whose first field starts with the `comment` byte
+/// has that field quoted.
+///
+/// ```valk
+/// let file = fs.stream("out.csv", fs.OpenOptions { read: false, write: fs.WriteMode.truncate, create: true }) ! panic("open")
+/// let writer = csv.Writer.new(file)
+/// writer.write_row(.{ "name", "age" }) ! panic("%{E.message}")
+/// writer.write_row(.{ "ada", 36 }) ! panic("%{E.message}")
+/// writer.flush() ! panic("%{E.message}")
+/// ```
++ class Writer {
+    out: io.Writer
+    buffer: ByteBuffer
+    // Whether `buffer` is `out` itself
+    direct: bool
+    options: Options
+    started: bool (false)
+
+    /// Creates a writer that writes to `out`.
+    + static fn new(out: io.Writer, options: ?Options (null)) Writer {
+        let opts = options ?? Options {}
+        check_options(opts)
+        match out {
+            ByteBuffer as buffer => return Writer { out: out, buffer: buffer, direct: true, options: opts }
+            default => return Writer { out: out, buffer: ByteBuffer.new(4096), direct: false, options: opts }
+        }
+    }
+
+    /// Writes one row.
+    ///
+    /// Throws `io` when the destination fails, which may happen on a later row than the one that
+    /// did not arrive, because rows are collected before they are written.
+    + fn write_row(fields: Array[String]) !Error {
+        this.put_row(fields)
+        if !this.direct && this.buffer.length >= FLUSH_SIZE : this.flush() !>
+    }
+
+    /// Writes rows one after the other.
+    + fn write_rows(rows: Array[Array[String]]) !Error {
+        each rows as row : this.write_row(row) !>
+    }
+
+    /// Writes the names of the fields of `T` as a row: the header for `write_object`.
+    + fn write_header_of[T]() !Error {
+        this.write_row(header_of[T]()) !>
+    }
+
+    /// Writes the fields of a class or struct as one row, in the order they are declared.
+    ///
+    /// Numbers and bools are written as text, and a `null` as an empty field.
+    + fn write_object(item: $T) !Error {
+        this.write_row(row_of(item)) !>
+    }
+
+    /// Writes the rows that are waiting to the destination.
+    + fn flush() !Error {
+        if this.direct : return
+        let buffer = this.buffer
+        let data = buffer.view()
+        while data.length > 0 {
+            let written = this.out.write(data) ! {
+                buffer.clear()
+                throw .io { message: "Writing the CSV failed" }
+            }
+            if written == 0 || written > data.length {
+                buffer.clear()
+                throw .io { message: "Writing the CSV failed" }
+            }
+            data = data.view(written, data.length - written)
+        }
+        buffer.clear()
+    }
+
+    // Adds a row to the buffer
+    fn put_row(fields: Array[String]) {
+        let buffer = this.buffer
+        let options = this.options
+        if !this.started {
+            this.started = true
+            if options.bom {
+                buffer.write_byte(0xef)
+                buffer.write_byte(0xbb)
+                buffer.write_byte(0xbf)
+            }
+        }
+        if fields.length == 1 && (fields.get(0) !? "").length == 0 {
+            // Unquoted it would be an empty line, which a reader skips
+            buffer.write_byte(options.quote)
+            buffer.write_byte(options.quote)
+        } else {
+            each fields as field, index {
+                if index > 0 : buffer.write_byte(options.delimiter)
+                this.put_field(field, index == 0)
+            }
+        }
+        buffer.write(options.line_ending)
+    }
+
+    fn put_field(field: String, first: bool) {
+        let buffer = this.buffer
+        let options = this.options
+        if !options.quote_all && !needs_quotes(field, first, options) {
+            buffer.write(field)
+            return
+        }
+        let quote = options.quote
+        buffer.write_byte(quote)
+        let start: uint = 0
+        let i: uint = 0
+        while i < field.length {
+            if field[i] == quote {
+                buffer.write(field.view(start, i + 1 - start))
+                buffer.write_byte(quote)
+                start = i + 1
+            }
+            i++
+        }
+        buffer.write(field.view(start, field.length - start))
+        buffer.write_byte(quote)
+    }
+}
+
+/// Writes rows as CSV text.
+///
+/// ```valk
+/// let text = csv.encode(.{ .{ "name", "note" }, .{ "ada", "says \"hi\", twice" } })
+/// // name,note\r\nada,"says ""hi"", twice"\r\n
+/// ```
++ fn encode(rows: Array[Array[String]], options: ?Options (null)) String {
+    let out = ByteBuffer.new(256)
+    let writer = Writer.new(out, options)
+    each rows as row : writer.put_row(row)
+    return out.into_string()
+}
+
+/// Writes objects of a class or struct as CSV text: a header row with the names of the fields,
+/// then one row per object, which `decode_to` reads back.
+///
+/// Numbers and bools are written as text, and a `null` as an empty field.
++ fn encode_of(items: Array[$T], options: ?Options (null)) String {
+    let out = ByteBuffer.new(256)
+    let writer = Writer.new(out, options)
+    writer.put_row(header_of[T]())
+    each items as item : writer.put_row(row_of(item))
+    return out.into_string()
+}
+
+// Whether a field must be quoted to read back as the same text
+fn needs_quotes(field: String, first: bool, options: Options) bool {
+    let length = field.length
+    if length == 0 : return false
+    let head = field[0]
+    let tail = field[length - 1]
+    if head == ' ' || head == '\t' || tail == ' ' || tail == '\t' : return true
+    // A first field that starts with the comment byte would make the row a comment
+    if first && options.comment != 0 && head == options.comment : return true
+    let delimiter = options.delimiter
+    let quote = options.quote
+    let i: uint = 0
+    while i < length {
+        let ch = field[i]
+        if ch == delimiter || ch == quote || ch == '\n' || ch == '\r' : return true
+        i++
+    }
+    return false
+}

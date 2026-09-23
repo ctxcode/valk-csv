@@ -1,0 +1,75 @@
+use csv
+
+// The samples in python-samples.valk come from Python's csv module; crosscheck.py makes them.
+
+fn check_reads(samples: Array[ReadSample], options: ?csv.Options (null)) bool {
+    let all_match = true
+    each samples as sample, index {
+        let rows = csv.parse(sample.text, options) ! {
+            // Where Python gives up on an open quote, this package throws
+            if !sample.unterminated || !error_is(E.code, syntax) {
+                println("sample " + index + " \"" + sample.text.escape() + "\": " + E.message)
+                all_match = false
+            }
+            continue
+        }
+        if sample.unterminated {
+            println("sample " + index + " \"" + sample.text.escape() + "\" has a quote that is not closed")
+            all_match = false
+            continue
+        }
+        if rows != sample.rows {
+            println("sample " + index + " \"" + sample.text.escape() + "\" gave " + show(rows) + ", Python " + show(sample.rows))
+            all_match = false
+            continue
+        }
+        let trickled = read_trickled(sample.text, 1, 4, options) ! {
+            all_match = false
+            continue
+        }
+        if trickled != sample.rows : all_match = false
+    }
+    return all_match
+}
+
+fn check_writes(samples: Array[WriteSample], options: csv.Options, same_text: bool) bool {
+    let all_match = true
+    each samples as sample, index {
+        let text = csv.encode(sample.rows, options)
+        if same_text && text != sample.text {
+            println("sample " + index + ": wrote \"" + text.escape() + "\", Python \"" + sample.text.escape() + "\"")
+            all_match = false
+        }
+        // What either one wrote reads back as the rows
+        let theirs = csv.parse(sample.text, options) ! {
+            println("sample " + index + ": " + E.message)
+            all_match = false
+            continue
+        }
+        let ours = csv.parse(text, options) ! {
+            println("sample " + index + ": " + E.message)
+            all_match = false
+            continue
+        }
+        if theirs != sample.rows || ours != sample.rows {
+            println("sample " + index + " did not read back as it was written")
+            all_match = false
+        }
+    }
+    return all_match
+}
+
+test "Reading what Python reads" {
+    assert(check_reads(python_reads()))
+    assert(check_reads(python_reads_semicolon(), csv.Options { delimiter: ';' }))
+}
+
+test "Writing what Python writes" {
+    assert(check_writes(python_writes(), csv.Options {}, true))
+    assert(check_writes(python_writes_semicolon_lf(), csv.Options { delimiter: ';', line_ending: "\n" }, true))
+    assert(check_writes(python_writes_quote_all(), csv.Options { quote_all: true }, true))
+    assert(check_writes(python_writes_single_quote_tab(), csv.Options { delimiter: '\t', quote: '\'' }, true))
+    // Python leaves spaces at the ends of a field bare, where this package quotes them; both
+    // read back the same
+    assert(check_writes(python_writes_blanks(), csv.Options {}, false))
+}
