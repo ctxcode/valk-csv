@@ -99,8 +99,7 @@ A field is quoted only when it has to be: when it holds the delimiter, the quote
 or starts or ends with a space or a tab, which a reader that trims would lose. A quote inside a
 quoted field is written twice. A row of one empty field is written as `""`, so it does not turn
 into an empty line, and with a `comment` byte set a first field that starts with it is quoted.
-Apart from the spaces at the ends of a field this is the rule of Python's `csv` module, and for
-those rows the output is byte for byte the same.
+Apart from the spaces at the ends of a field this is the rule of Python's `csv` module.
 
 ## Options
 
@@ -133,8 +132,7 @@ number of lines and chunk boundaries.
 
 Outside strict mode it reads broken quoting the way Python's `csv` module does: a quote inside an
 unquoted field is text, and text after a closing quote joins the field. A quoted field that is
-never closed is always an error, where Python returns the rest of the file as its last field. The
-test suite checks every rule against samples that Python read and wrote.
+never closed is always an error, where Python returns the rest of the file as its last field.
 
 Not supported: escape characters other than the doubled quote, multi-byte delimiters, and
 guessing the dialect of a file.
