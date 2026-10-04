@@ -88,6 +88,8 @@ value FLUSH_SIZE (65536)
     fn put_row(fields: Array[String]) {
         let buffer = this.buffer
         let options = this.options
+        // A byte order mark at the very start of the text is not read as part of the first field
+        let bom_first = !this.started && !options.bom
         if !this.started {
             this.started = true
             if options.bom {
@@ -103,16 +105,16 @@ value FLUSH_SIZE (65536)
         } else {
             each fields as field, index {
                 if index > 0 : buffer.write_byte(options.delimiter)
-                this.put_field(field, index == 0)
+                this.put_field(field, index == 0, bom_first && index == 0)
             }
         }
         buffer.write(options.line_ending)
     }
 
-    fn put_field(field: String, first: bool) {
+    fn put_field(field: String, first: bool, at_start: bool) {
         let buffer = this.buffer
         let options = this.options
-        if !options.quote_all && !needs_quotes(field, first, options) {
+        if !options.quote_all && !needs_quotes(field, first, options) && !(at_start && starts_with_bom(field)) {
             buffer.write(field)
             return
         }
@@ -176,4 +178,8 @@ fn needs_quotes(field: String, first: bool, options: Options) bool {
         i++
     }
     return false
+}
+
+fn starts_with_bom(field: String) bool {
+    return field.length >= 3 && field[0] == 0xef && field[1] == 0xbb && field[2] == 0xbf
 }

@@ -61,6 +61,15 @@ test "A byte order mark" {
     // Which the reader skips
     let rows = csv.parse(text) ! { assert(false) return }
     assert(rows == .{ .{ "a" }, .{ "b" } })
+
+    // A first field that starts with one is quoted, so the reader keeps it
+    let marked = Array[Array[String]]{ .{ bom() + "a", "b" }, .{ bom() + "c" } }
+    let written = csv.encode(marked)
+    assert(written == "\"" + bom() + "a\",b\r\n" + bom() + "c\r\n")
+    let back = csv.parse(written) ! { assert(false) return }
+    assert(back == marked)
+    let after_bom = csv.parse(csv.encode(marked, csv.Options { bom: true })) ! { assert(false) return }
+    assert(after_bom == marked)
 }
 
 test "Writing to a ByteBuffer" {

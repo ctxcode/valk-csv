@@ -98,7 +98,8 @@ Rows collect in the writer and go out in large writes, so call `flush()` after t
 A field is quoted only when it has to be: when it holds the delimiter, the quote, `\r` or `\n`,
 or starts or ends with a space or a tab, which a reader that trims would lose. A quote inside a
 quoted field is written twice. A row of one empty field is written as `""`, so it does not turn
-into an empty line, and with a `comment` byte set a first field that starts with it is quoted.
+into an empty line, and with a `comment` byte set a first field that starts with it is quoted, as
+is the very first field when it starts with a byte order mark.
 Apart from the spaces at the ends of a field this is the rule of Python's `csv` module.
 
 ## Options
