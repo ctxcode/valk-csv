@@ -56,7 +56,10 @@ while true {
 
 - `next()` returns the row as an `Array[String]`, `next_map()` as a map from column name to
   field, and `next_to[Product]()` as an object of your class. All three return `null` after the
-  last row.
+  last row. `next_into(row)` fills an array you keep, so a loop over a large file allocates
+  nothing per row.
+- Fields are views of the input: nothing is copied unless a quoted field holds a doubled quote.
+  A chunk of a file stays in memory while one of its fields is in use.
 - With `header: true` the first row is the header: `reader.header()` returns it, and
   `reader.column("email")` gives the index of a column for `row[index]`.
 - `reader.line` is the line the last row started on, for messages of your own.

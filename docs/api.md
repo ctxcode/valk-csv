@@ -67,7 +67,9 @@ Namespaces: [main](#main)
     + fn close() void
     // Returns the index of the column with this name in the header, for `row[index]`.
     + fn column(name: String) uint !Error
-    // Creates a reader over text that is already in memory. The text is not copied.
+    // Returns the line and column where field `index` of the last row starts, counting from one; the position of the row itself when it has no such field.
+    + fn field_position(index: uint) (uint, uint)
+    // Creates a reader over text that is already in memory. The text is not copied, and the fields it returns are views of it.
     + static fn from_string(text: String, options: ?Options (null)) Reader
     // Returns the header row: empty without the `header` option, or when the input is empty.
     + fn header() Array[String] !Error
@@ -75,6 +77,8 @@ Namespaces: [main](#main)
     + static fn new(source: Reader, options: ?Options (null), chunk_size: uint (65536)) Reader
     // Returns the next row, or `null` after the last one.
     + fn next() ?Array[String] !Error
+    // Reads the next row into `row`, which is cleared first, and returns whether there was one.
+    + fn next_into(row: Array[String]) bool !Error
     // Returns the next row as a map from column name to field, or `null` after the last one.
     + fn next_map() ?Map[String] !Error
     // Returns the next row as an object of your own class or struct, or `null` after the last one.

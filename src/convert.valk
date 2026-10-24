@@ -27,35 +27,36 @@ fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
             #if prop.$has_explicit_default_value || prop.$type.$is_nullable
             if text.length == 0 : return prop.$default_value
             #end
-            let line = reader.field_lines.get(index) !? reader.line
-            let column = reader.field_columns.get(index) !? 1
-            return field_to[prop](text, prop.name, line, column) !>
+            return field_to[prop](text, prop.name, reader, index) !>
         }
         #end
     }
     #end
 }
 
-// One field as the type `P`
-fn field_to[P](text: String, name: String, line: uint, column: uint) P !Error {
+// One field as the type `P`; the field's position is only computed for an error
+fn field_to[P](text: String, name: String, reader: Reader, index: uint) P !Error {
     #if P.$is_nullable
     if text.length == 0 : return null
-    return field_to[nonnull(P)](text, name, line, column) !>
+    return field_to[nonnull(P)](text, name, reader, index) !>
     #elif P.$is_type_of(String)
     return text
     #elif P.$is_bool
     let word = trim_blanks(text)
     if word == "1" || word.equals_ignore_ascii_case("true") || word.equals_ignore_ascii_case("yes") : return true
     if word == "0" || word.equals_ignore_ascii_case("false") || word.equals_ignore_ascii_case("no") : return false
+    let line, column = reader.field_position(index)
     throw .type { message: "'" + text + "' in column '" + name + "' is not true or false", line: line, column: column }
     #elif P.$is_enum
     #error "A CSV field cannot be read into an enum; read it as a String or a number and convert it"
     #elif P.$is_integer
     return trim_blanks(text).to_number[P]() ! {
+        let line, column = reader.field_position(index)
         throw .type { message: "'" + text + "' in column '" + name + "' is not a whole number that fits", line: line, column: column }
     }
     #elif P.$is_float
     return trim_blanks(text).to_number[P]() ! {
+        let line, column = reader.field_position(index)
         throw .type { message: "'" + text + "' in column '" + name + "' is not a number", line: line, column: column }
     }
     #else

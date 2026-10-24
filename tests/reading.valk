@@ -209,3 +209,20 @@ test "Reading row by row" {
     let again = reader.next() ! { assert(false) return }
     assert(!isset(again))
 }
+
+test "next_into reuses one array for every row" {
+    let reader = csv.Reader.from_string("a,b\n\"x\"\"y\",2\nlast,3\n")
+    let row = Array[String]{ "stale" }
+    let seen = Array[String]{}
+    while true {
+        let read = reader.next_into(row) ! panic(E.message)
+        if !read : break
+        seen.append(row.join("|"))
+    }
+    assert(seen.join(";") == "a|b;x\"y|2;last|3")
+    // The array is cleared before every read, so it is empty after the end
+    assert(row.length == 0)
+    let again = csv.Reader.from_string("p,q,r\n")
+    assert((again.next_into(row) !? false) && row.length == 3 && row[2] == "r")
+    assert(!(again.next_into(row) !? true) && row.length == 0)
+}

@@ -60,9 +60,10 @@
     let reader = Reader.from_string(text, options)
     reader.use_header = true
     let items = Array[T]{}
+    let row = Array[String]{}
     while true {
-        let row = reader.next() !>
-        if !isset(row) : break
+        let read = reader.next_into(row) !>
+        if !read : break
         items.append(decode_row[T](reader, row) !>)
     }
     return items

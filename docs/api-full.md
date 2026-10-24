@@ -202,7 +202,9 @@ fields.
     + fn close() void
     // Returns the index of the column with this name in the header, for `row[index]`.
     + fn column(name: String) uint !Error
-    // Creates a reader over text that is already in memory. The text is not copied.
+    // Returns the line and column where field `index` of the last row starts, counting from one; the position of the row itself when it has no such field.
+    + fn field_position(index: uint) (uint, uint)
+    // Creates a reader over text that is already in memory. The text is not copied, and the fields it returns are views of it.
     + static fn from_string(text: String, options: ?Options (null)) Reader
     // Returns the header row: empty without the `header` option, or when the input is empty.
     + fn header() Array[String] !Error
@@ -210,6 +212,8 @@ fields.
     + static fn new(source: Reader, options: ?Options (null), chunk_size: uint (65536)) Reader
     // Returns the next row, or `null` after the last one.
     + fn next() ?Array[String] !Error
+    // Reads the next row into `row`, which is cleared first, and returns whether there was one.
+    + fn next_into(row: Array[String]) bool !Error
     // Returns the next row as a map from column name to field, or `null` after the last one.
     + fn next_map() ?Map[String] !Error
     // Returns the next row as an object of your own class or struct, or `null` after the last one.
@@ -223,8 +227,10 @@ fields.
 
 Reads CSV one row at a time, from text in memory, a file or any `io.Reader`.
 
-Only one chunk of the input and the row being read are held in memory, so a file of any size
-can be read. A quoted field may run over chunk boundaries and over as many lines as it likes.
+Fields are views of the input: a row costs one array, and only a quoted field with a doubled
+quote inside is copied. A source is read in chunks; a chunk stays in memory while a field of
+it is in use, so a file of any size can be read. A quoted field may run over chunk boundaries
+and over as many lines as it likes.
 
 ```valk
 let reader = csv.Reader.open("users.csv", csv.Options { header: true }) ! panic("%{E.message}")
@@ -251,9 +257,15 @@ Returns the index of the column with this name in the header, for `row[index]`.
 
 Throws `header` when there is no such column, or no header.
 
+#### field_position
+
+Returns the line and column where field `index` of the last row starts, counting from
+one; the position of the row itself when it has no such field.
+
 #### from_string
 
-Creates a reader over text that is already in memory. The text is not copied.
+Creates a reader over text that is already in memory. The text is not copied, and the
+fields it returns are views of it.
 
 #### header
 
@@ -272,6 +284,13 @@ Returns the next row, or `null` after the last one.
 Empty lines are skipped unless `skip_empty_lines` is off, and so are comment lines when a
 `comment` byte is set. With the `header` option on, the first row is the header, which
 `header` returns, and never comes out of here.
+
+#### next_into
+
+Reads the next row into `row`, which is cleared first, and returns whether there was one.
+
+The same array can take every row in turn, so reading a file allocates nothing per row
+besides the fields that need unescaping. Otherwise it behaves like `next`.
 
 #### next_map
 
