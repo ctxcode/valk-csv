@@ -67,6 +67,10 @@ Namespaces: [main](#main)
     + fn close() void
     // Returns the index of the column with this name in the header, for `row[index]`.
     + fn column(name: String) uint !Error
+    // Returns field `index` of the last row, or `null` when it has no such field.
+    + fn field(index: uint) ?String
+    // Returns the number of fields of the last row.
+    + get field_count: uint
     // Returns the line and column where field `index` of the last row starts, counting from one; the position of the row itself when it has no such field.
     + fn field_position(index: uint) (uint, uint)
     // Creates a reader over text that is already in memory. The text is not copied, and the fields it returns are views of it.
@@ -81,6 +85,8 @@ Namespaces: [main](#main)
     + fn next_into(row: Array[String]) bool !Error
     // Returns the next row as a map from column name to field, or `null` after the last one.
     + fn next_map() ?Map[String] !Error
+    // Reads the next row without making its fields, and returns whether there was one.
+    + fn next_row() bool !Error
     // Returns the next row as an object of your own class or struct, or `null` after the last one.
     + fn next_to[T]() ?T !Error
     // Opens a file and reads it `chunk_size` bytes at a time.

@@ -5,9 +5,10 @@ use valk.mem
 /// Reads CSV one row at a time, from text in memory, a file or any `io.Reader`.
 ///
 /// Fields are views of the input: a row costs one array, and only a quoted field with a doubled
-/// quote inside is copied. A source is read in chunks; a chunk stays in memory while a field of
-/// it is in use, so a file of any size can be read. A quoted field may run over chunk boundaries
-/// and over as many lines as it likes.
+/// quote inside is copied. `next_row` and `field` go further and make only the fields you ask
+/// for. A source is read in chunks; a chunk stays in memory while a field of it is in use, so a
+/// file of any size can be read. A row may run over chunk boundaries and over as many lines as
+/// it likes.
 ///
 /// ```valk
 /// let reader = csv.Reader.open("users.csv", csv.Options { header: true }) ! panic("%{E.message}")
@@ -33,17 +34,19 @@ use valk.mem
     // Where the field being read starts in `data`, kept when a new chunk is read
     field_start: uint (0)
     in_field: bool (false)
+    // A new chunk keeps the row being read in front, so a row is always one range of one chunk
+    in_row: bool (false)
     // Fields that need unescaping are built here
-    field: ByteBuffer (.new(64))
+    field_buffer: ByteBuffer (.new(64))
     // The line of the next byte
     pos_line: uint (1)
     after_cr: bool (false)
-    // The row being read: where it starts in `data`, the bytes of it that earlier chunks held,
-    // and where each field starts, counted from the start of the row. Positions in error
-    // messages are computed from these when needed
+    // The row being read: where it starts in `data`, and its fields. Positions in error messages
+    // are computed from these when needed, and strings when a field is asked for
     row_start: uint (0)
-    row_carry: ByteBuffer (.new(0))
-    field_offsets: Array[uint] (.{})
+    spans: Array[FieldSpan] (.{})
+    // Fields that had to be built while reading, which FIELD_BUILT spans point at
+    built: Array[String] (.{})
     // Rows read so far, the header included, how many fields the first one had and the last
     rows_read: uint (0)
     width: uint (0)
@@ -113,12 +116,42 @@ use valk.mem
     /// The same array can take every row in turn, so reading a file allocates nothing per row
     /// besides the fields that need unescaping. Otherwise it behaves like `next`.
     + fn next_into(row: Array[String]) bool !Error {
-        if !this.started : this.start() !>
         row.clear()
-        let read = this.read_row(row) !>
+        let read = this.next_row() !>
         if !read : return false
-        this.check_width(row) !>
+        this.copy_fields(row)
         return true
+    }
+
+    /// Reads the next row without making its fields, and returns whether there was one.
+    ///
+    /// `field` and `field_count` read the row until the next read. This is the cheapest way
+    /// through a file when you do not need every field. Otherwise it behaves like `next`.
+    ///
+    /// ```valk
+    /// while reader.next_row() ! panic("%{E.message} at line %{E.line}") {
+    ///     println(reader.field(2) ?? "")
+    /// }
+    /// ```
+    + fn next_row() bool !Error {
+        if !this.started : this.start() !>
+        let read = this.read_row() !>
+        if !read : return false
+        this.check_width() !>
+        return true
+    }
+
+    /// Returns the number of fields of the last row.
+    + get field_count: uint {
+        return this.spans.length
+    }
+
+    /// Returns field `index` of the last row, or `null` when it has no such field.
+    ///
+    /// A view of the input unless the field needs unescaping. It stays valid after the next read.
+    + fn field(index: uint) ?String {
+        if index >= this.field_count : return null
+        return this.make_field(index)
     }
 
     /// Returns the next row as a map from column name to field, or `null` after the last one.
@@ -188,7 +221,7 @@ use valk.mem
     /// Returns the line and column where field `index` of the last row starts, counting from
     /// one; the position of the row itself when it has no such field.
     + fn field_position(index: uint) (uint, uint) {
-        let offset = this.field_offsets.get(index) !? 0
+        let offset = index < this.spans.length ? this.spans[index].offset : 0
         return this.position_at(offset)
     }
 
@@ -201,10 +234,11 @@ use valk.mem
         this.started = true
         this.skip_bom() !>
         if !this.use_header : return
-        let row = Array[String]{}
-        let read = this.read_row(row) !>
+        let read = this.read_row() !>
         if !read : return
-        this.check_width(row) !>
+        this.check_width() !>
+        let row = Array[String]{}
+        this.copy_fields(row)
         this.header_row = row
         this.header_line = this.line
         each row as name, index {
@@ -218,30 +252,53 @@ use valk.mem
     }
 
     // Strict mode: every row has as many fields as the first
-    fn check_width(row: Array[String]) !Error {
+    fn check_width() !Error {
         if !this.options.strict : return
+        let count = this.field_count
         if this.rows_read == 1 {
-            this.width = row.length
+            this.width = count
             return
         }
-        if row.length == this.width : return
+        if count == this.width : return
         // Too many fields: point at the first one too many
         let line = this.line
         let column: uint = 1
-        if row.length > this.width {
+        if count > this.width {
             let field_line, field_column = this.field_position(this.width)
             line = field_line
             column = field_column
         }
         throw .fields {
-            message: "This row has " + row.length + " fields, where the first row has " + this.width
+            message: "This row has " + count + " fields, where the first row has " + this.width
             line: line
             column: column
         }
     }
 
-    // The next row into `row`, false at the end of the input
-    fn read_row(row: Array[String]) bool !Error {
+    fn copy_fields(row: Array[String]) {
+        each 0 .. this.field_count as i : row.append(this.make_field(i))
+    }
+
+    fn make_field(index: uint) String $inline {
+        let span = this.spans[index]
+        let kind = span.kind
+        let length = span.length
+        let start = this.row_start + span.offset
+        if kind == FIELD_PLAIN : return this.data.range(start, length)
+        return this.make_special_field(start, length, kind)
+    }
+
+    fn make_special_field(start: uint, length: uint, kind: u8) String {
+        if kind == FIELD_QUOTED : return this.data.range(start + 1, length)
+        if kind == FIELD_BUILT : return this.built[length]
+        let field = this.field_buffer
+        field.clear()
+        this.unescape(start + 1, start + 1 + length, field)
+        return field.to_string()
+    }
+
+    // The next row, false at the end of the input
+    fn read_row() bool !Error {
         let options = this.options
         while true {
             let more = this.fill() !>
@@ -260,29 +317,34 @@ use valk.mem
         }
         this.line = this.pos_line
         this.row_start = this.at
-        this.row_carry.clear()
-        this.field_offsets.clear()
+        this.in_row = true
+        this.spans.clear()
+        if this.built.length > 0 : this.built.clear()
         while true {
-            let another = this.read_field(row) !>
+            let another = this.read_field() !>
             if !another : break
         }
-        this.last_width = row.length
+        this.in_row = false
+        this.last_width = this.field_count
         this.rows_read++
         return true
     }
 
-    // Reads one field into `row`, and the delimiter or line end after it. Returns whether
-    // another field follows on the same row.
-    fn read_field(row: Array[String]) bool !Error {
+    fn add_span(length: uint, kind: u8) $inline {
+        this.spans.append(FieldSpan { offset: this.field_start - this.row_start, length: length, kind: kind })
+    }
+
+    // Reads one field and the delimiter or line end after it. Returns whether another field
+    // follows on the same row.
+    fn read_field() bool !Error {
         let options = this.options
         if options.trim : this.skip_blanks() !>
         this.field_start = this.at
         this.in_field = true
-        this.field_offsets.append(this.row_offset(this.at))
 
         let more = this.fill() !>
         if more && this.data[this.at] == options.quote {
-            row.append(this.read_quoted() !>)
+            this.read_quoted() !>
         } else {
             let stop = this.scan_unquoted() !>
             let start = this.field_start
@@ -290,7 +352,7 @@ use valk.mem
             if options.trim {
                 while length > 0 && is_blank(this.data[start + length - 1], options.delimiter) : length--
             }
-            row.append(this.data.range(start, length))
+            this.add_span(length, FIELD_PLAIN)
         }
         this.in_field = false
 
@@ -331,8 +393,8 @@ use valk.mem
     }
 
     // A quoted field at `at`: everything up to the closing quote, where two quotes stand for one.
-    // Unescaping copies; any other field is a view
-    fn read_quoted() String !Error {
+    // Unescaping copies, when the field is asked for; any other field is a view
+    fn read_quoted() !Error {
         let quote = this.options.quote
         let options = this.options
         this.at++
@@ -340,7 +402,7 @@ use valk.mem
         while true {
             let more = this.fill() !>
             if !more {
-                let line, column = this.field_position(this.field_offsets.length - 1)
+                let line, column = this.position_at(this.field_start - this.row_start)
                 throw .syntax { message: "A quoted field is not closed", line: line, column: column }
             }
             let data = this.data
@@ -387,17 +449,19 @@ use valk.mem
         // Text after the closing quote belongs to the field, unless strict mode forbids it
         let trailing = this.after_quote() !>
         let content_start = this.field_start + 1
-        if !escaped && trailing == 0 : return this.data.range(content_start, content_length)
-        let field = this.field
+        if trailing == 0 {
+            this.add_span(content_length, escaped ? FIELD_ESCAPED : FIELD_QUOTED)
+            return
+        }
+        let field = this.field_buffer
         field.clear()
         if escaped : this.unescape(content_start, content_start + content_length, field)
         else : field.write(this.data.view(content_start, content_length))
-        if trailing > 0 {
-            let quoted = field.length
-            field.write(this.data.view(this.at - trailing, trailing))
-            if options.trim : trim_end(field, quoted, options.delimiter)
-        }
-        return field.to_string()
+        let quoted = field.length
+        field.write(this.data.view(this.at - trailing, trailing))
+        if options.trim : trim_end(field, quoted, options.delimiter)
+        this.add_span(this.built.length, FIELD_BUILT)
+        this.built.append(field.to_string())
     }
 
     // Writes the quoted content between `start` and `end` with every doubled quote as one
@@ -485,21 +549,19 @@ use valk.mem
     // Positions
     //
 
-    // The offset of the byte at `at` from the start of the row, counting the bytes earlier
-    // chunks held
+    // The offset of the byte at `at` from the start of the row
     fn row_offset(at: uint) uint {
-        return this.row_carry.length + (at - this.row_start)
+        return at - this.row_start
     }
 
     // The line and column of the byte `offset` into the row, counted from the row's start
     fn position_at(offset: uint) (uint, uint) {
         let line = this.line
         let column: uint = 1
-        let carry = this.row_carry.length
         let i: uint = 0
         let previous: u8 = 0
         while i < offset {
-            let ch = i < carry ? this.row_carry[i] : this.data[this.row_start + i - carry]
+            let ch = this.data[this.row_start + i]
             if ch == '\n' {
                 if previous != '\r' : line++
                 column = 1
@@ -530,23 +592,22 @@ use valk.mem
     }
 
     // Reads from the source into the chunk, into a new one when it is full; returns the bytes
-    // that came in, 0 at the end of the input. A new chunk keeps the field being read (or the
-    // unread bytes) in front, so a field is always one range of one chunk
+    // that came in, 0 at the end of the input. A new chunk keeps the row being read (or the
+    // unread bytes) in front, and grows with it so a long row is not copied again and again
     fn read_more() uint !Error {
         @unsafe
         let source = this.source
         if this.exhausted || !isset(source) : return 0
         if this.end == this.data.length {
-            let keep_from = this.in_field ? this.field_start : this.at
+            let keep_from = this.in_row ? this.row_start : this.at
             let kept = this.end - keep_from
-            let chunk = String.alloc(kept + this.chunk_size)
+            let chunk = String.alloc(kept + (kept > this.chunk_size ? kept : this.chunk_size))
             if kept > 0 : mem.copy_bytes(this.data.data.@offset(keep_from), chunk.data, kept)
-            // The bytes of the row that are not kept stay available for positions
-            if this.row_start < keep_from : this.row_carry.write(this.data.view(this.row_start, keep_from - this.row_start))
             this.row_start = 0
             this.at -= keep_from
             this.end = kept
-            this.field_start = this.in_field ? 0 : this.at
+            // Before the first field of a row it is stale, and set before it is read
+            this.field_start = this.field_start >= keep_from ? this.field_start - keep_from : 0
             this.data = chunk
         }
         let room = [u8]{ owner: this.data.owner, data: @ref(@ptrv(this.data.data, u8, this.end)), length: this.data.length - this.end }
@@ -593,6 +654,20 @@ fn trim_end(field: ByteBuffer, floor: uint, delimiter: u8) {
     while length > floor && is_blank(field[length - 1], delimiter) : length--
     if length < field.length : field.truncate(length)
 }
+
+// A field of the row being read: where it starts, counted from the start of the row, and how it
+// is held. PLAIN and QUOTED are ranges of the row, ESCAPED is such a range with doubled quotes,
+// and BUILT has an index in `built` for its length
+struct FieldSpan {
+    offset: uint
+    length: uint
+    kind: u8
+}
+
+value FIELD_PLAIN (0)
+value FIELD_QUOTED (1)
+value FIELD_ESCAPED (2)
+value FIELD_BUILT (3)
 
 value SWAR_ONES (0x0101010101010101)
 value SWAR_HIGH (0x8080808080808080)

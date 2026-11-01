@@ -226,3 +226,67 @@ test "next_into reuses one array for every row" {
     assert((again.next_into(row) !? false) && row.length == 3 && row[2] == "r")
     assert(!(again.next_into(row) !? true) && row.length == 0)
 }
+
+test "next_row makes only the fields that are asked for" {
+    let text = "a,\"b \"\"q\"\"\",\"c\"x, d ,\"e\"\n\n1,2\n"
+    let reader = csv.Reader.from_string(text)
+    assert(reader.next_row() !? false)
+    assert(reader.field_count == 5)
+    assert((reader.field(0) ?? "?") == "a")
+    assert((reader.field(1) ?? "?") == "b \"q\"")
+    assert((reader.field(2) ?? "?") == "cx")
+    assert((reader.field(3) ?? "?") == " d ")
+    assert((reader.field(4) ?? "?") == "e")
+    assert(!isset(reader.field(5)))
+    let kept = reader.field(1) ?? "?"
+    assert(reader.next_row() !? false)
+    assert(reader.field_count == 2)
+    assert((reader.field(1) ?? "?") == "2")
+    assert(kept == "b \"q\"")
+    assert(!(reader.next_row() !? true))
+    assert(reader.field_count == 2)
+}
+
+test "next_row gives what next gives, whatever the chunks" {
+    let text = "h1,h2,h3\n\"a\nb\",\"c\"\"d\",e\r\n,,\n \"x\" , y ,\"z\"w\nlast,\"row\",\"\"\"\""
+    each Array[uint]{ 4, 5, 7, 16, 65536 } as chunk {
+        each Array[bool]{ false, true } as trim {
+            let opts = csv.Options { trim: trim }
+            let eager = csv.Reader.new(TrickleReader { text: text, step: chunk }, opts, chunk)
+            let lazy = csv.Reader.new(TrickleReader { text: text, step: chunk }, opts, chunk)
+            let plain = csv.Reader.from_string(text, opts)
+            while true {
+                let row = eager.next() ! panic(E.message)
+                let read = lazy.next_row() ! panic(E.message)
+                let same = plain.next() ! panic(E.message)
+                assert(isset(row) == read)
+                assert(isset(same) == read)
+                if !isset(row) : break
+                assert(row.length == lazy.field_count)
+                each row as value, index {
+                    assert((lazy.field(index) ?? "?") == value)
+                }
+                if isset(same) : assert(same.length == row.length)
+            }
+        }
+    }
+}
+
+test "a row over many chunks keeps its fields and positions" {
+    let wide = ByteBuffer.new(200000)
+    each 0 .. 20000 as i {
+        if i > 0 : wide.write_byte(',')
+        wide.write("f%i")
+    }
+    wide.write("\nnext,row\n")
+    let reader = csv.Reader.new(TrickleReader { text: wide.into_string(), step: 7 }, null, 16)
+    assert(reader.next_row() !? false)
+    assert(reader.field_count == 20000)
+    assert((reader.field(0) ?? "") == "f0")
+    assert((reader.field(19999) ?? "") == "f19999")
+    let line, column = reader.field_position(1)
+    assert(line == 1 && column == 4)
+    assert(reader.next_row() !? false)
+    assert((reader.field(1) ?? "") == "row")
+    assert(reader.line == 2)
+}

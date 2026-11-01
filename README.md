@@ -57,7 +57,8 @@ while true {
 - `next()` returns the row as an `Array[String]`, `next_map()` as a map from column name to
   field, and `next_to[Product]()` as an object of your class. All three return `null` after the
   last row. `next_into(row)` fills an array you keep, so a loop over a large file allocates
-  nothing per row.
+  nothing per row. `next_row()` with `field(index)` makes only the fields you ask for, which is
+  the fastest way through a file when you do not need them all.
 - Fields are views of the input: nothing is copied unless a quoted field holds a doubled quote.
   A chunk of a file stays in memory while one of its fields is in use.
 - With `header: true` the first row is the header: `reader.header()` returns it, and

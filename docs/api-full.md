@@ -202,6 +202,10 @@ fields.
     + fn close() void
     // Returns the index of the column with this name in the header, for `row[index]`.
     + fn column(name: String) uint !Error
+    // Returns field `index` of the last row, or `null` when it has no such field.
+    + fn field(index: uint) ?String
+    // Returns the number of fields of the last row.
+    + get field_count: uint
     // Returns the line and column where field `index` of the last row starts, counting from one; the position of the row itself when it has no such field.
     + fn field_position(index: uint) (uint, uint)
     // Creates a reader over text that is already in memory. The text is not copied, and the fields it returns are views of it.
@@ -216,6 +220,8 @@ fields.
     + fn next_into(row: Array[String]) bool !Error
     // Returns the next row as a map from column name to field, or `null` after the last one.
     + fn next_map() ?Map[String] !Error
+    // Reads the next row without making its fields, and returns whether there was one.
+    + fn next_row() bool !Error
     // Returns the next row as an object of your own class or struct, or `null` after the last one.
     + fn next_to[T]() ?T !Error
     // Opens a file and reads it `chunk_size` bytes at a time.
@@ -228,9 +234,10 @@ fields.
 Reads CSV one row at a time, from text in memory, a file or any `io.Reader`.
 
 Fields are views of the input: a row costs one array, and only a quoted field with a doubled
-quote inside is copied. A source is read in chunks; a chunk stays in memory while a field of
-it is in use, so a file of any size can be read. A quoted field may run over chunk boundaries
-and over as many lines as it likes.
+quote inside is copied. `next_row` and `field` go further and make only the fields you ask
+for. A source is read in chunks; a chunk stays in memory while a field of it is in use, so a
+file of any size can be read. A row may run over chunk boundaries and over as many lines as
+it likes.
 
 ```valk
 let reader = csv.Reader.open("users.csv", csv.Options { header: true }) ! panic("%{E.message}")
@@ -256,6 +263,16 @@ A reader over another source leaves closing it to its owner.
 Returns the index of the column with this name in the header, for `row[index]`.
 
 Throws `header` when there is no such column, or no header.
+
+#### field
+
+Returns field `index` of the last row, or `null` when it has no such field.
+
+A view of the input unless the field needs unescaping. It stays valid after the next read.
+
+#### field_count
+
+Returns the number of fields of the last row.
 
 #### field_position
 
@@ -299,6 +316,19 @@ Returns the next row as a map from column name to field, or `null` after the las
 Needs the `header` option. A row that is shorter than the header leaves its missing
 columns out of the map, and fields past the end of the header are dropped; strict mode
 turns both into an error.
+
+#### next_row
+
+Reads the next row without making its fields, and returns whether there was one.
+
+`field` and `field_count` read the row until the next read. This is the cheapest way
+through a file when you do not need every field. Otherwise it behaves like `next`.
+
+```valk
+while reader.next_row() ! panic("%{E.message} at line %{E.line}") {
+    println(reader.field(2) ?? "")
+}
+```
 
 #### next_to
 
