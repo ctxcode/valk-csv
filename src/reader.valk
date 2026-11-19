@@ -683,7 +683,6 @@ fn swar_match(word: u64, pattern: u64) u64 $inline {
 // `d` when `four`), or `to` when there is none: eight bytes at a time, the last eight of a
 // longer range read once more so no byte goes through the loop alone
 fn scan_bytes(data: String, from: uint, to: uint, a: u8, b: u8, c: u8, d: u8, four: bool) uint $inline {
-    @unsafe
     let base = data.data
     let pa = a.to(u64) * SWAR_ONES
     let pb = b.to(u64) * SWAR_ONES
