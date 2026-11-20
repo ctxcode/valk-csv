@@ -41,7 +41,9 @@
 
 /// Reads CSV text whose first row is a header into objects of your own class or struct.
 ///
-/// Each field is read from the column with its name; columns without a field are ignored. The
+/// Each field is read from the column with its name; columns without a field are ignored. Field
+/// tags customize column mapping: `$tag(csv: "Header Name")` (or `` `csv: "Header Name"` ``)
+/// matches a renamed column, and `$tag(csv: "-")` skips a field (using its default value). The
 /// text converts to the type of the field: numbers, `true`/`false` (also `yes`/`no` and `1`/`0`,
 /// in any case) and strings, or a nullable one of those. An empty field gives `null` for a
 /// nullable field and the default for a field that has one. A field that is neither nullable nor

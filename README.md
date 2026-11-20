@@ -4,7 +4,7 @@ CSV for [Valk](https://valk-lang.dev): reading and writing RFC 4180, row by row 
 size, and straight into and out of your own classes. Purely written in Valk, with no os-package
 dependencies.
 
-Requires Valk 0.7.0 or newer.
+Requires Valk 0.8.10 or newer.
 
 ## Install
 
@@ -85,6 +85,22 @@ columns without a field are ignored. The text converts to the type of the field:
 `encode_of(items)` and `Writer.write_header_of[T]()` / `write_object(item)` write the fields in the
 order they are declared, numbers in their shortest exact form, bools as `true`/`false` and `null`
 as an empty field. Enums and nested classes are refused when the program is built.
+
+### Field tags
+
+Field metadata tags customize column headers and skipping:
+
+```rust
+class Product {
+    sku: String `csv: "SKU"`
+    name: String `csv: "Product Name"`
+    price: f64 `csv: "Unit Price"`
+    internal_id: uint (0) `csv: "-"`
+}
+```
+
+- `` `csv: "Header Name"` `` or `$tag(csv: "Header Name")`: maps the field to a custom column header on both read and write.
+- `` `csv: "-"` `` or `$tag(csv: "-")`: omits the field from headers and written rows, and fills its default value on decode.
 
 ## Writing
 

@@ -37,7 +37,7 @@ Both are 0 when the error has no place in the text, such as a failed write.
 + fn decode_to[T](text: String, options: ?Options (null)) Array[T] !Error
 // Writes rows as CSV text.
 + fn encode(rows: Array[Array[String]], options: ?Options (null)) String
-// Writes objects of a class or struct as CSV text: a header row with the names of the fields, then one row per object, which `decode_to` reads back.
+// Writes objects of a class or struct as CSV text: a header row with the column names of the fields, then one row per object, which `decode_to` reads back.
 + fn encode_of(items: Array[$T], options: ?Options (null)) String
 // Reads CSV text into rows of fields.
 + fn parse(text: String, options: ?Options (null)) Array[Array[String]] !Error
@@ -49,7 +49,9 @@ Both are 0 when the error has no place in the text, such as a failed write.
 
 Reads CSV text whose first row is a header into objects of your own class or struct.
 
-Each field is read from the column with its name; columns without a field are ignored. The
+Each field is read from the column with its name; columns without a field are ignored. Field
+tags customize column mapping: `$tag(csv: "Header Name")` (or `` `csv: "Header Name"` ``)
+matches a renamed column, and `$tag(csv: "-")` skips a field (using its default value). The
 text converts to the type of the field: numbers, `true`/`false` (also `yes`/`no` and `1`/`0`,
 in any case) and strings, or a nullable one of those. An empty field gives `null` for a
 nullable field and the default for a field that has one. A field that is neither nullable nor
@@ -76,10 +78,12 @@ let text = csv.encode(.{ .{ "name", "note" }, .{ "ada", "says \"hi\", twice" } }
 
 ### encode_of
 
-Writes objects of a class or struct as CSV text: a header row with the names of the fields,
-then one row per object, which `decode_to` reads back.
+Writes objects of a class or struct as CSV text: a header row with the column names of the
+fields, then one row per object, which `decode_to` reads back.
 
-Numbers and bools are written as text, and a `null` as an empty field.
+Numbers and bools are written as text, and a `null` as an empty field. Field tags control
+columns: `$tag(csv: "Header Name")` (or `` `csv: "Header Name"` ``) renames a column header
+and `$tag(csv: "-")` skips a field.
 
 ### parse
 
@@ -358,7 +362,7 @@ The file closes when it has been read to the end; `close` closes it sooner.
     + fn flush() void !Error
     // Creates a writer that writes to `out`.
     + static fn new(out: Writer, options: ?Options (null)) Writer
-    // Writes the names of the fields of `T` as a row: the header for `write_object`.
+    // Writes the column names of the fields of `T` as a row: the header for `write_object`.
     + fn write_header_of[T]() void !Error
     // Writes the fields of a class or struct as one row, in the order they are declared.
     + fn write_object(item: $T) void !Error
@@ -400,13 +404,16 @@ Creates a writer that writes to `out`.
 
 #### write_header_of
 
-Writes the names of the fields of `T` as a row: the header for `write_object`.
+Writes the column names of the fields of `T` as a row: the header for `write_object`.
+
+Respects `$tag(csv: "Header Name")` to rename a column and `$tag(csv: "-")` to skip a field.
 
 #### write_object
 
 Writes the fields of a class or struct as one row, in the order they are declared.
 
-Numbers and bools are written as text, and a `null` as an empty field.
+Numbers and bools are written as text, and a `null` as an empty field. Fields tagged with
+`$tag(csv: "-")` are skipped.
 
 #### write_row
 

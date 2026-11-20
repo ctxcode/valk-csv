@@ -3,7 +3,7 @@
 // Rows into the fields of a class, and back. These are generated for the caller's own types,
 // whose fields are usually private to the caller's package, hence the access override.
 
-// One row as `T`, each field read from the column with its name
+// One row as `T`, each field read from the column with its name (or `csv` tag)
 fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
     #if !T.$is_structural
     #error "CSV rows can only be read into a class or a struct"
@@ -11,12 +11,20 @@ fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
     return T {
         #loop properties T as prop
         prop: <{
-            let index = reader.columns.get(prop.name) ! {
+            #if prop.$tag("csv") == "-"
+            #if prop.$has_default_value
+            return prop.$default_value
+            #else
+            #error "Skipped CSV property has no default value"
+            #end
+            #else
+            let col_name = prop.$tag("csv", prop.name)
+            let index = reader.columns.get(col_name) ! {
                 #if prop.$has_explicit_default_value || prop.$type.$is_nullable
                 return prop.$default_value
                 #else
                 throw .header {
-                    message: "The header has no column '" + prop.name + "'"
+                    message: "The header has no column '" + col_name + "'"
                     line: reader.header_line
                     column: 1
                 }
@@ -27,7 +35,8 @@ fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
             #if prop.$has_explicit_default_value || prop.$type.$is_nullable
             if text.length == 0 : return prop.$default_value
             #end
-            return field_to[prop](text, prop.name, reader, index) !>
+            return field_to[prop](text, col_name, reader, index) !>
+            #end
         }
         #end
     }
@@ -64,14 +73,16 @@ fn field_to[P](text: String, name: String, reader: Reader, index: uint) P !Error
     #end
 }
 
-// The names of the fields of `T` in order: the header row
+// The column names of the fields of `T` in order: the header row
 fn header_of[T]() Array[String] {
     #if !T.$is_structural
     #error "Only a class or a struct can be written as a CSV row"
     #else
     let names = Array[String]{}
     #loop properties T as prop
-    names.append(prop.name)
+    #if prop.$tag("csv") != "-"
+    names.append(prop.$tag("csv", prop.name))
+    #end
     #end
     return names
     #end
@@ -84,7 +95,9 @@ fn row_of(item: $T) Array[String] {
     #else
     let row = Array[String]{}
     #loop object item as prop
+    #if prop.$tag("csv") != "-"
     row.append(field_text(prop))
+    #end
     #end
     return row
     #end

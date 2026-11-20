@@ -21,7 +21,7 @@ Namespaces: [main](#main)
 + fn decode_to[T](text: String, options: ?Options (null)) Array[T] !Error
 // Writes rows as CSV text.
 + fn encode(rows: Array[Array[String]], options: ?Options (null)) String
-// Writes objects of a class or struct as CSV text: a header row with the names of the fields, then one row per object, which `decode_to` reads back.
+// Writes objects of a class or struct as CSV text: a header row with the column names of the fields, then one row per object, which `decode_to` reads back.
 + fn encode_of(items: Array[$T], options: ?Options (null)) String
 // Reads CSV text into rows of fields.
 + fn parse(text: String, options: ?Options (null)) Array[Array[String]] !Error
@@ -101,7 +101,7 @@ Namespaces: [main](#main)
     + fn flush() void !Error
     // Creates a writer that writes to `out`.
     + static fn new(out: Writer, options: ?Options (null)) Writer
-    // Writes the names of the fields of `T` as a row: the header for `write_object`.
+    // Writes the column names of the fields of `T` as a row: the header for `write_object`.
     + fn write_header_of[T]() void !Error
     // Writes the fields of a class or struct as one row, in the order they are declared.
     + fn write_object(item: $T) void !Error

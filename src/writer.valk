@@ -53,14 +53,17 @@ value FLUSH_SIZE (65536)
         each rows as row : this.write_row(row) !>
     }
 
-    /// Writes the names of the fields of `T` as a row: the header for `write_object`.
+    /// Writes the column names of the fields of `T` as a row: the header for `write_object`.
+    ///
+    /// Respects `$tag(csv: "Header Name")` to rename a column and `$tag(csv: "-")` to skip a field.
     + fn write_header_of[T]() !Error {
         this.write_row(header_of[T]()) !>
     }
 
     /// Writes the fields of a class or struct as one row, in the order they are declared.
     ///
-    /// Numbers and bools are written as text, and a `null` as an empty field.
+    /// Numbers and bools are written as text, and a `null` as an empty field. Fields tagged with
+    /// `$tag(csv: "-")` are skipped.
     + fn write_object(item: $T) !Error {
         this.write_row(row_of(item)) !>
     }
@@ -148,10 +151,12 @@ value FLUSH_SIZE (65536)
     return out.into_string()
 }
 
-/// Writes objects of a class or struct as CSV text: a header row with the names of the fields,
-/// then one row per object, which `decode_to` reads back.
+/// Writes objects of a class or struct as CSV text: a header row with the column names of the
+/// fields, then one row per object, which `decode_to` reads back.
 ///
-/// Numbers and bools are written as text, and a `null` as an empty field.
+/// Numbers and bools are written as text, and a `null` as an empty field. Field tags control
+/// columns: `$tag(csv: "Header Name")` (or `` `csv: "Header Name"` ``) renames a column header
+/// and `$tag(csv: "-")` skips a field.
 + fn encode_of(items: Array[$T], options: ?Options (null)) String {
     let out = ByteBuffer.new(256)
     let writer = Writer.new(out, options)

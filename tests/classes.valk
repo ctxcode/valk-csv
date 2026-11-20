@@ -251,3 +251,118 @@ test "Writing objects one at a time" {
     writer.flush() ! { assert(false) return }
     assert(out.out.to_string() == "x,y,label\n1,2,one\n3,4,\"two\nlines\"\n")
 }
+
+class TaggedProduct {
+    sku: String $tag(csv: "SKU")
+    name: String `csv: "Product Name"`
+    unit_price: f64 `csv: "Price, USD"`
+    stock: uint (5) $tag(csv: "In Stock")
+    note: ?String `csv: "Notes"`
+    internal_id: int $tag(csv: "-")
+    secret: String ("hidden") `csv: "-"`
+    cached: ?String `csv: "-"`
+}
+
+struct TaggedRow {
+    first: String `csv: "First Col"`
+    second: int $tag(csv: "Second Col")
+    scratch: int `csv: "-"`
+}
+
+test "Field tags: rename and skip on encode and decode" {
+    let items = Array[TaggedProduct]{
+        TaggedProduct {
+            sku: "A-1"
+            name: "Widget"
+            unit_price: 9.5
+            stock: 12
+            note: "sale"
+            internal_id: 99
+            secret: "do-not-write"
+            cached: "memo"
+        }
+        TaggedProduct {
+            sku: "B-2"
+            name: "Gadget"
+            unit_price: 4.25
+            note: null
+            internal_id: 100
+            secret: "also-hidden"
+        }
+    }
+
+    let text = csv.encode_of(items, csv.Options { line_ending: "\n" })
+    assert(text == "SKU,Product Name,\"Price, USD\",In Stock,Notes\nA-1,Widget,9.5,12,sale\nB-2,Gadget,4.25,5,\n")
+
+    let back = csv.decode_to[TaggedProduct](text) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(back.length == 2)
+    assert(back[0].sku == "A-1")
+    assert(back[0].name == "Widget")
+    assert(back[0].unit_price == 9.5)
+    assert(back[0].stock == 12)
+    assert((back[0].note ?? "") == "sale")
+    assert(back[0].internal_id == 0)
+    assert(back[0].secret == "hidden")
+    assert(!isset(back[0].cached))
+
+    assert(back[1].sku == "B-2")
+    assert(back[1].stock == 5)
+    assert(!isset(back[1].note))
+    assert(back[1].secret == "hidden")
+}
+
+test "Field tags: skipped column ignored even if present in CSV" {
+    let text = "SKU,Product Name,\"Price, USD\",secret,internal_id\nX-1,Bolt,1.5,override,42\n"
+    let items = csv.decode_to[TaggedProduct](text) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(items.length == 1)
+    assert(items[0].sku == "X-1")
+    assert(items[0].stock == 5)
+    assert(!isset(items[0].note))
+    assert(items[0].secret == "hidden")
+    assert(items[0].internal_id == 0)
+}
+
+test "Field tags: structs, streaming next_to, and writer" {
+    let out = TrickleWriter {}
+    let writer = csv.Writer.new(out, csv.Options { line_ending: "\n" })
+    writer.write_header_of[TaggedRow]() ! { assert(false) return }
+    writer.write_object(TaggedRow { first: "alpha", second: 10, scratch: 77 }) ! { assert(false) return }
+    writer.write_object(TaggedRow { first: "beta", second: 20, scratch: 88 }) ! { assert(false) return }
+    writer.flush() ! { assert(false) return }
+
+    let written = out.out.to_string()
+    assert(written == "First Col,Second Col\nalpha,10\nbeta,20\n")
+
+    let reader = csv.Reader.from_string(written, csv.Options { header: true })
+    let r1 = reader.next_to[TaggedRow]() ! { assert(false) return }
+    let r2 = reader.next_to[TaggedRow]() ! { assert(false) return }
+    let r3 = reader.next_to[TaggedRow]() ! { assert(false) return }
+    assert(isset(r1) && r1.first == "alpha" && r1.second == 10 && r1.scratch == 0)
+    assert(isset(r2) && r2.first == "beta" && r2.second == 20 && r2.scratch == 0)
+    assert(!isset(r3))
+}
+
+test "Field tags: error messages report renamed column headers" {
+    // Missing renamed column
+    csv.decode_to[TaggedProduct]("SKU,\"Price, USD\"\nA-1,1.0\n") ! {
+        assert(error_is(E.code, header))
+        assert(E.message == "The header has no column 'Product Name'")
+        assert(E.line == 1)
+    }
+    // Invalid value in renamed column
+    csv.decode_to[TaggedProduct]("SKU,Product Name,\"Price, USD\"\nA-1,Widget,nope\n") ! {
+        assert(error_is(E.code, type))
+        assert(E.message == "'nope' in column 'Price, USD' is not a number")
+        assert(E.line == 2)
+        return
+    }
+    assert(false)
+}
