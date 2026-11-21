@@ -8,27 +8,26 @@ class Failure {
     column: uint
 }
 
+fn error_code(e: csv.Error) String {
+    return match e : String {
+        .syntax(_, _, _) => "syntax"
+        .fields(_, _, _) => "fields"
+        .header(_, _, _) => "header"
+        .type(_, _, _) => "type"
+        .io(_, _, _) => "io"
+    }
+}
+
 // The error a text gives, in one piece and through a trickling source, which must agree
 fn error_of(text: String, options: ?csv.Options (null)) ?Failure {
     let found: ?Failure = null
     csv.parse(text, options) ! {
-        let code = "other"
-        if error_is(E.code, syntax) : code = "syntax"
-        else if error_is(E.code, fields) : code = "fields"
-        else if error_is(E.code, header) : code = "header"
-        else if error_is(E.code, type) : code = "type"
-        else if error_is(E.code, io) : code = "io"
-        found = Failure { code: code, message: E.message, line: E.line, column: E.column }
+        assert(E.to_string() == E.message)
+        found = Failure { code: error_code(E), message: E.message, line: E.line, column: E.column }
     }
     let trickled: ?Failure = null
     read_trickled(text, 1, 4, options) ! {
-        let code = "other"
-        if error_is(E.code, syntax) : code = "syntax"
-        else if error_is(E.code, fields) : code = "fields"
-        else if error_is(E.code, header) : code = "header"
-        else if error_is(E.code, type) : code = "type"
-        else if error_is(E.code, io) : code = "io"
-        trickled = Failure { code: code, message: E.message, line: E.line, column: E.column }
+        trickled = Failure { code: error_code(E), message: E.message, line: E.line, column: E.column }
     }
     if !isset(found) || !isset(trickled) : return null
     if found.code != trickled.code || found.message != trickled.message || found.line != trickled.line || found.column != trickled.column {
@@ -103,7 +102,7 @@ test "Strict field counts" {
     // The header counts as the first row
     let reader = csv.Reader.from_string("a,b\n1,2,3\n", csv.Options { strict: true, header: true })
     reader.next() ! {
-        assert(error_is(E.code, fields))
+        assert(E is .fields)
         assert(E.line == 2)
         return
     }
@@ -122,7 +121,7 @@ test "Columns count characters" {
 test "A failing source" {
     let reader = csv.Reader.new(FailingReader {})
     reader.next() ! {
-        assert(error_is(E.code, io))
+        assert(E is .io)
         assert(E.line == 1)
         return
     }
@@ -131,7 +130,7 @@ test "A failing source" {
 
 test "A file that is not there" {
     csv.Reader.open(__DIR__ + "/not-there.csv") ! {
-        assert(error_is(E.code, io))
+        assert(E is .io)
         assert(E.message.contains("not-there.csv"))
         return
     }
@@ -142,7 +141,7 @@ test "A failing destination" {
     let writer = csv.Writer.new(FailingWriter {})
     writer.write_row(.{ "a", "b" }) ! { assert(false) return }
     writer.flush() ! {
-        assert(error_is(E.code, io))
+        assert(E is .io)
         return
     }
     assert(false)

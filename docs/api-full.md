@@ -7,29 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown when CSV cannot be read, or cannot be written to its destination.
-+ error Error (syntax, fields, header, type, io) payload { message: String, line: uint (0), column: uint (0) }
-```
-
-### Error
-
-Thrown when CSV cannot be read, or cannot be written to its destination.
-
-- `syntax`: the quotes do not follow the rules. A quoted field that is never closed is
-  always an error; in strict mode so is a quote inside an unquoted field, and text between a
-  closing quote and the delimiter.
-- `fields`: in strict mode, a row has another number of fields than the first row.
-- `header`: a header is needed and there is none, a column is looked up by a name the header
-  does not have, or a field of the class being read has no column.
-- `type`: a field does not convert to the type of the class field it is read into.
-- `io`: reading the source or writing the destination failed.
-
-`line` and `column` say where, counting from one; the column counts characters, not bytes.
-Both are 0 when the error has no place in the text, such as a failed write.
-
 ## Functions for 'main'
 
 ```js
@@ -109,6 +86,40 @@ println(users[0].get("age") !? "") // 36
 ```
 
 ## Classes for 'main'
+
+```js
+// Thrown when CSV cannot be read, or cannot be written to its destination.
++ union Error {
+    syntax(String, uint, uint)
+    fields(String, uint, uint)
+    header(String, uint, uint)
+    type(String, uint, uint)
+    io(String, uint, uint)
+
+    + get column: uint
+    + get line: uint
+    + get message: String
+    + fn to_string() String
+}
+```
+
+### Error
+
+Thrown when CSV cannot be read, or cannot be written to its destination.
+
+- `syntax(message, line, column)`: the quotes do not follow the rules. A quoted field that is
+  never closed is always an error; in strict mode so is a quote inside an unquoted field, and
+  text between a closing quote and the delimiter.
+- `fields(message, line, column)`: in strict mode, a row has another number of fields than the
+  first row.
+- `header(message, line, column)`: a header is needed and there is none, a column is looked up
+  by a name the header does not have, or a field of the class being read has no column.
+- `type(message, line, column)`: a field does not convert to the type of the class field it is
+  read into.
+- `io(message, line, column)`: reading the source or writing the destination failed.
+
+`line` and `column` say where, counting from one; the column counts characters, not bytes.
+Both are 0 when the error has no place in the text, such as a failed write.
 
 ```js
 // How CSV is read and written: the dialect.

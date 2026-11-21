@@ -23,11 +23,7 @@ fn decode_row[T](reader: Reader, row: Array[String]) T !Error {
                 #if prop.$has_explicit_default_value || prop.$type.$is_nullable
                 return prop.$default_value
                 #else
-                throw .header {
-                    message: "The header has no column '" + col_name + "'"
-                    line: reader.header_line
-                    column: 1
-                }
+                throw .header("The header has no column '" + col_name + "'", reader.header_line, 1)
                 #end
             }
             // A row shorter than the header has empty fields at the end
@@ -55,18 +51,18 @@ fn field_to[P](text: String, name: String, reader: Reader, index: uint) P !Error
     if word == "1" || word.equals_ignore_ascii_case("true") || word.equals_ignore_ascii_case("yes") : return true
     if word == "0" || word.equals_ignore_ascii_case("false") || word.equals_ignore_ascii_case("no") : return false
     let line, column = reader.field_position(index)
-    throw .type { message: "'" + text + "' in column '" + name + "' is not true or false", line: line, column: column }
+    throw .type("'" + text + "' in column '" + name + "' is not true or false", line, column)
     #elif P.$is_enum
     #error "A CSV field cannot be read into an enum; read it as a String or a number and convert it"
     #elif P.$is_integer
     return trim_blanks(text).to_number[P]() ! {
         let line, column = reader.field_position(index)
-        throw .type { message: "'" + text + "' in column '" + name + "' is not a whole number that fits", line: line, column: column }
+        throw .type("'" + text + "' in column '" + name + "' is not a whole number that fits", line, column)
     }
     #elif P.$is_float
     return trim_blanks(text).to_number[P]() ! {
         let line, column = reader.field_position(index)
-        throw .type { message: "'" + text + "' in column '" + name + "' is not a number", line: line, column: column }
+        throw .type("'" + text + "' in column '" + name + "' is not a number", line, column)
     }
     #else
     #error "A CSV field can only be read into a String, a number or a bool, or a nullable one of those"

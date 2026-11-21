@@ -7,13 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown when CSV cannot be read, or cannot be written to its destination.
-+ error Error (syntax, fields, header, type, io) payload { message: String, line: uint (0), column: uint (0) }
-```
-
 ## Functions for 'main'
 
 ```js
@@ -30,6 +23,22 @@ Namespaces: [main](#main)
 ```
 
 ## Classes for 'main'
+
+```js
+// Thrown when CSV cannot be read, or cannot be written to its destination.
++ union Error {
+    syntax(String, uint, uint)
+    fields(String, uint, uint)
+    header(String, uint, uint)
+    type(String, uint, uint)
+    io(String, uint, uint)
+
+    + get column: uint
+    + get line: uint
+    + get message: String
+    + fn to_string() String
+}
+```
 
 ```js
 // How CSV is read and written: the dialect.

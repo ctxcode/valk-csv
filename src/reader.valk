@@ -93,7 +93,7 @@ use valk.mem
     ///
     /// The file closes when it has been read to the end; `close` closes it sooner.
     + static fn open(path: String, options: ?Options (null), chunk_size: uint (65536)) Reader !Error {
-        let stream = fs.stream(path) ! throw .io { message: "Cannot open '" + path + "'" }
+        let stream = fs.stream(path) ! throw .io("Cannot open '" + path + "'", 0, 0)
         let reader = Reader.new(stream, options, chunk_size)
         reader.file = stream
         return reader
@@ -201,11 +201,7 @@ use valk.mem
     /// Throws `header` when there is no such column, or no header.
     + fn column(name: String) uint !Error {
         this.need_header() !>
-        return this.columns.get(name) ! throw .header {
-            message: "The header has no column '" + name + "'"
-            line: this.header_line
-            column: 1
-        }
+        return this.columns.get(name) ! throw .header("The header has no column '" + name + "'", this.header_line, 1)
     }
 
     /// Closes the file that `open` opened. Rows that were not read yet are not returned.
@@ -248,7 +244,7 @@ use valk.mem
 
     fn need_header() !Error {
         if !this.started : this.start() !>
-        if !this.use_header : throw .header { message: "Reading rows by column name needs a header: set `header: true` in the options" }
+        if !this.use_header : throw .header("Reading rows by column name needs a header: set `header: true` in the options", 0, 0)
     }
 
     // Strict mode: every row has as many fields as the first
@@ -268,11 +264,7 @@ use valk.mem
             line = field_line
             column = field_column
         }
-        throw .fields {
-            message: "This row has " + count + " fields, where the first row has " + this.width
-            line: line
-            column: column
-        }
+        throw .fields("This row has " + count + " fields, where the first row has " + this.width, line, column)
     }
 
     fn copy_fields(row: Array[String]) {
@@ -382,11 +374,7 @@ use valk.mem
             if i == end : continue
             if strict && data[i] == quote {
                 let line, column = this.position_at(this.row_offset(i))
-                throw .syntax {
-                    message: "A quote inside an unquoted field: quote the whole field, and write the quote twice"
-                    line: line
-                    column: column
-                }
+                throw .syntax("A quote inside an unquoted field: quote the whole field, and write the quote twice", line, column)
             }
             return i
         }
@@ -403,7 +391,7 @@ use valk.mem
             let more = this.fill() !>
             if !more {
                 let line, column = this.position_at(this.field_start - this.row_start)
-                throw .syntax { message: "A quoted field is not closed", line: line, column: column }
+                throw .syntax("A quoted field is not closed", line, column)
             }
             let data = this.data
             let end = this.end
@@ -491,11 +479,7 @@ use valk.mem
             let ch = this.data[this.at]
             if ch == options.delimiter || ch == '\n' || ch == '\r' : return 0
             let line, column = this.position_at(this.row_offset(this.at))
-            throw .syntax {
-                message: "Expected the delimiter or the end of the line after the closing quote"
-                line: line
-                column: column
-            }
+            throw .syntax("Expected the delimiter or the end of the line after the closing quote", line, column)
         }
         // Measured from the field start, which a new chunk keeps in front
         let before = this.at - this.field_start
@@ -613,7 +597,7 @@ use valk.mem
         let room = [u8]{ owner: this.data.owner, data: @ref(@ptrv(this.data.data, u8, this.end)), length: this.data.length - this.end }
         let count = source.read(room) ! {
             // A source that was closed has nothing more to give, as for `io.read_all`
-            if error_is(E.code, closed) {
+            if E is .closed {
                 this.exhausted = true
                 return 0
             }
@@ -624,7 +608,7 @@ use valk.mem
                 line = field_line
                 column = field_column
             }
-            throw .io { message: "Reading the CSV failed", line: line, column: column }
+            throw .io("Reading the CSV failed", line, column)
         }
         if count == 0 {
             this.exhausted = true

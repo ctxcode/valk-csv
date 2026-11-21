@@ -98,30 +98,30 @@ test "Bools" {
 test "Fields that do not convert" {
     // Not a number: points at the field
     csv.decode_to[Point]("x,y,label\n1,2,a\n3,four,b\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
         assert(E.message == "'four' in column 'y' is not a whole number that fits")
         assert(E.line == 3)
         assert(E.column == 3)
     }
     // Out of range for the type
     csv.decode_to[Person]("name,age,height,admin,level\nA,1,1,true,300\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
         assert(E.message.contains("'300'"))
         assert(E.column == 12)
     }
     // A negative number into an unsigned field
     csv.decode_to[Person]("name,age,height,admin\nA,-1,1,true\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
         assert(E.message.contains("column 'age'"))
     }
     // Not a bool
     csv.decode_to[Person]("name,age,height,admin\nA,1,1,maybe\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
         assert(E.message.contains("not true or false"))
     }
     // An empty field for a number that has no default
     csv.decode_to[Person]("name,age,height,admin\nA,,1,true\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
     }
     // A field on the second line of a row that spans two
     csv.decode_to[Point]("label,x,y\n\"two\nlines\",1,y\n") ! {
@@ -135,7 +135,7 @@ test "Fields that do not convert" {
 test "Columns that are missing" {
     // A field without a default needs its column
     csv.decode_to[Person]("name,height,admin\nA,1,true\n") ! {
-        assert(error_is(E.code, header))
+        assert(E is .header)
         assert(E.message == "The header has no column 'age'")
         assert(E.line == 1)
     }
@@ -236,7 +236,7 @@ test "Streaming objects" {
     // Without the header option there are no column names
     let plain = csv.Reader.from_string(text)
     plain.next_to[Person]() ! {
-        assert(error_is(E.code, header))
+        assert(E is .header)
         return
     }
     assert(false)
@@ -353,13 +353,13 @@ test "Field tags: structs, streaming next_to, and writer" {
 test "Field tags: error messages report renamed column headers" {
     // Missing renamed column
     csv.decode_to[TaggedProduct]("SKU,\"Price, USD\"\nA-1,1.0\n") ! {
-        assert(error_is(E.code, header))
+        assert(E is .header)
         assert(E.message == "The header has no column 'Product Name'")
         assert(E.line == 1)
     }
     // Invalid value in renamed column
     csv.decode_to[TaggedProduct]("SKU,Product Name,\"Price, USD\"\nA-1,Widget,nope\n") ! {
-        assert(error_is(E.code, type))
+        assert(E is .type)
         assert(E.message == "'nope' in column 'Price, USD' is not a number")
         assert(E.line == 2)
         return

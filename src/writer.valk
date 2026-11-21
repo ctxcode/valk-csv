@@ -76,11 +76,11 @@ value FLUSH_SIZE (65536)
         while data.length > 0 {
             let written = this.out.write(data) ! {
                 buffer.clear()
-                throw .io { message: "Writing the CSV failed" }
+                throw .io("Writing the CSV failed", 0, 0)
             }
             if written == 0 || written > data.length {
                 buffer.clear()
-                throw .io { message: "Writing the CSV failed" }
+                throw .io("Writing the CSV failed", 0, 0)
             }
             data = data.view(written, data.length - written)
         }

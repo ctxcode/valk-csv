@@ -7,7 +7,7 @@ fn check_reads(samples: Array[ReadSample], options: ?csv.Options (null)) bool {
     each samples as sample, index {
         let rows = csv.parse(sample.text, options) ! {
             // Where Python gives up on an open quote, this package throws
-            if !sample.unterminated || !error_is(E.code, syntax) {
+            if !sample.unterminated || !(E is .syntax) {
                 println("sample " + index + " \"" + sample.text.escape() + "\": " + E.message)
                 all_match = false
             }

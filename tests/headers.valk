@@ -50,7 +50,7 @@ test "Columns by name" {
 
     // A name that is not there
     reader.column("email") ! {
-        assert(error_is(E.code, header))
+        assert(E is .header)
         assert(E.message.contains("'email'"))
         assert(E.line == 1)
         return
@@ -72,7 +72,7 @@ test "The header is not a row" {
     let first = plain.next() ! { assert(false) return }
     assert(isset(first) && first == .{ "a", "b" })
     plain.next_map() ! {
-        assert(error_is(E.code, header))
+        assert(E is .header)
         return
     }
     assert(false)

@@ -4,7 +4,7 @@ CSV for [Valk](https://valk-lang.dev): reading and writing RFC 4180, row by row 
 size, and straight into and out of your own classes. Purely written in Valk, with no os-package
 dependencies.
 
-Requires Valk 0.8.10 or newer.
+Requires Valk 0.9.1 or newer.
 
 ## Install
 
